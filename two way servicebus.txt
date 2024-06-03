@@ -1,0 +1,161 @@
+OrderToTeamsLibrary/
+├── Consumers/
+│   ├── OrderConsumer.cs
+│   ├── OrderRequestConsumer.cs
+├── Models/
+│   ├── Order.cs
+│   ├── OrderRequest.cs
+│   ├── OrderResponse.cs
+│   ├── OrderResponseMessage.cs
+├── Services/
+│   ├── TeamsService.cs
+│   ├── OrderPublisher.cs
+├── OrderToTeamsLibrary.csproj
+OrderToTeamsAPI/
+├── Controllers/
+│   ├── OrderResponseController.cs
+├── Program.cs
+├── OrderToTeamsAPI.csproj
+
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using OrderToTeamsLibrary.Consumers;
+using OrderToTeamsLibrary.Services;
+using System;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+builder.Services.AddControllers();
+builder.Services.AddHttpClient<TeamsService>(client =>
+{
+    client.BaseAddress = new Uri("https://outlook.office.com/");
+});
+builder.Services.AddSingleton(sp => new TeamsService(sp.GetRequiredService<HttpClient>(), "YOUR_TEAMS_WEBHOOK_URL"));
+
+// Configure MassTransit
+builder.Services.AddMassTransit(x =>
+{
+    // Add consumers
+    x.AddConsumer<OrderConsumer>();
+    x.AddConsumer<OrderRequestConsumer>();
+
+    // Configure RabbitMQ
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.Host("localhost", "/", h => { });
+
+        cfg.ReceiveEndpoint("order_queue", e =>
+        {
+            e.ConfigureConsumer<OrderConsumer>(context);
+        });
+
+        cfg.ReceiveEndpoint("order_request_queue", e =>
+        {
+            e.ConfigureConsumer<OrderRequestConsumer>(context);
+        });
+    });
+
+    // Configure Azure Service Bus
+    x.UsingAzureServiceBus((context, cfg) =>
+    {
+        cfg.Host("YOUR_AZURE_SERVICE_BUS_CONNECTION_STRING");
+
+        cfg.ReceiveEndpoint("order_queue_service_bus", e =>
+        {
+            e.ConfigureConsumer<OrderConsumer>(context);
+        });
+
+        cfg.ReceiveEndpoint("order_request_queue_service_bus", e =>
+        {
+            e.ConfigureConsumer<OrderRequestConsumer>(context);
+        });
+    });
+});
+
+builder.Services.AddMassTransitHostedService();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+app.UseHttpsRedirection();
+
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();
+
+
+
+using MassTransit;
+using OrderToTeamsLibrary.Models;
+using OrderToTeamsLibrary.Services;
+using System.Threading.Tasks;
+
+namespace OrderToTeamsLibrary.Consumers
+{
+    public class OrderConsumer : IConsumer<Order>
+    {
+        private readonly TeamsService _teamsService;
+        private readonly IRequestClient<OrderRequest> _requestClient;
+
+        public OrderConsumer(TeamsService teamsService, IRequestClient<OrderRequest> requestClient)
+        {
+            _teamsService = teamsService;
+            _requestClient = requestClient;
+        }
+
+        public async Task Consume(ConsumeContext<Order> context)
+        {
+            var order = context.Message;
+
+            // Send request and await response
+            var response = await _requestClient.GetResponse<OrderResponse>(new OrderRequest { OrderId = order.Id });
+
+            // Process the response
+            var orderResponse = response.Message;
+
+            // Use the response data to send message to Teams
+            await _teamsService.SendOrderToTeams(new Order
+            {
+                Id = orderResponse.OrderId,
+                CustomerName = orderResponse.CustomerName,
+                ProductName = orderResponse.ProductName,
+                Quantity = orderResponse.Quantity,
+                Price = orderResponse.Price
+            });
+        }
+    }
+}
+
+
+
+using MassTransit;
+using OrderToTeamsLibrary.Models;
+using System.Threading.Tasks;
+
+namespace OrderToTeamsLibrary.Consumers
+{
+    public class OrderRequestConsumer : IConsumer<OrderRequest>
+    {
+        public async Task Consume(ConsumeContext<OrderRequest> context)
+        {
+            // Mocked order response for demonstration. Fetch from DB or other service in real scenarios.
+            var orderResponse = new OrderResponse
+            {
+                OrderId = context.Message.OrderId,
+                CustomerName = "John Doe",
+                ProductName = "Sample Product",
+                Quantity = 1,
+                Price = 9.99m
+            };
+
+            await context.RespondAsync(orderResponse);
+        }
+    }
+}
+
+

@@ -1,0 +1,181 @@
+// Models/OrderResponseMessage.cs
+namespace OrderToTeamsLibrary.Models
+{
+    public class OrderResponseMessage
+    {
+        public int OrderId { get; set; }
+        public bool Accepted { get; set; }
+        public string Response { get; set; }
+    }
+}
+
+
+// Services/TeamsService.cs
+using System.Net.Http;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+using OrderToTeamsLibrary.Models;
+
+namespace OrderToTeamsLibrary.Services
+{
+    public class TeamsService
+    {
+        private readonly HttpClient _httpClient;
+        private readonly string _webhookUrl;
+
+        public TeamsService(HttpClient httpClient, string webhookUrl)
+        {
+            _httpClient = httpClient;
+            _webhookUrl = webhookUrl;
+        }
+
+        public async Task SendOrderToTeams(Order order)
+        {
+            var teamsMessage = new
+            {
+                text = $"New Order Received:\nCustomer: {order.CustomerName}\nProduct: {order.ProductName}\nQuantity: {order.Quantity}\nPrice: {order.Price:C}",
+                actions = new[]
+                {
+                    new
+                    {
+                        type = "ActionCard",
+                        name = "Respond to Order",
+                        actions = new[]
+                        {
+                            new
+                            {
+                                type = "HttpPOST",
+                                name = "Accept",
+                                target = $"{_webhookUrl}/api/orders/respond",
+                                body = JsonConvert.SerializeObject(new OrderResponseMessage { OrderId = order.Id, Accepted = true, Response = "Accepted" })
+                            },
+                            new
+                            {
+                                type = "HttpPOST",
+                                name = "Reject",
+                                target = $"{_webhookUrl}/api/orders/respond",
+                                body = JsonConvert.SerializeObject(new OrderResponseMessage { OrderId = order.Id, Accepted = false, Response = "Rejected" })
+                            }
+                        }
+                    }
+                }
+            };
+
+            var jsonMessage = JsonConvert.SerializeObject(teamsMessage);
+            var content = new StringContent(jsonMessage, Encoding.UTF8, "application/json");
+
+            await _httpClient.PostAsync(_webhookUrl, content);
+        }
+
+        public async Task HandleOrderResponse(OrderResponseMessage response)
+        {
+            // Handle the response logic here
+            if (response.Accepted)
+            {
+                // Logic for accepted orders
+                Console.WriteLine($"Order {response.OrderId} was accepted with response: {response.Response}");
+            }
+            else
+            {
+                // Logic for rejected orders
+                Console.WriteLine($"Order {response.OrderId} was rejected with response: {response.Response}");
+            }
+
+            await Task.CompletedTask;
+        }
+    }
+}
+
+
+// Controllers/OrderResponseController.cs
+using Microsoft.AspNetCore.Mvc;
+using OrderToTeamsLibrary.Models;
+using OrderToTeamsLibrary.Services;
+using System.Threading.Tasks;
+
+namespace OrderToTeamsAPI.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    public class OrderResponseController : ControllerBase
+    {
+        private readonly TeamsService _teamsService;
+
+        public OrderResponseController(TeamsService teamsService)
+        {
+            _teamsService = teamsService;
+        }
+
+        [HttpPost("respond")]
+        public async Task<IActionResult> Respond([FromBody] OrderResponseMessage responseMessage)
+        {
+            await _teamsService.HandleOrderResponse(responseMessage);
+            return Ok();
+        }
+    }
+}
+
+
+// Program.cs
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using OrderToTeamsLibrary.Consumers;
+using OrderToTeamsLibrary.Models;
+using OrderToTeamsLibrary.Services;
+using System;
+using System.Threading.Tasks;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+builder.Services.AddHttpClient<TeamsService>(client =>
+{
+    client.BaseAddress = new Uri("https://outlook.office.com/");
+});
+builder.Services.AddSingleton(sp => new TeamsService(sp.GetRequiredService<HttpClient>(), "YOUR_TEAMS_WEBHOOK_URL"));
+
+builder.Services.AddMassTransit(x =>
+{
+    x.AddConsumer<OrderConsumer>();
+    x.AddConsumer<OrderRequestConsumer>();
+
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.Host("localhost", "/", h => { });
+
+        cfg.ReceiveEndpoint("order_queue", e =>
+        {
+            e.ConfigureConsumer<OrderConsumer>(context);
+        });
+
+        cfg.ReceiveEndpoint("order_request_queue", e =>
+        {
+            e.ConfigureConsumer<OrderRequestConsumer>(context);
+        });
+    });
+});
+
+builder.Services.AddMassTransitHostedService();
+builder.Services.AddSingleton<OrderPublisher>();
+
+var app = builder.Build();
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+var orderPublisher = app.Services.GetRequiredService<OrderPublisher>();
+await orderPublisher.PublishOrder(new Order
+{
+    Id = 1,
+    CustomerName = "John Doe",
+    ProductName = "Sample Product",
+    Quantity = 1,
+    Price = 9.99m
+});
+
+await app.RunAsync();
+
+

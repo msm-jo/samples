@@ -1,0 +1,255 @@
+OrderToTeamsLibrary/
+├── Consumers/
+│   ├── GenericConsumer.cs
+├── Models/
+│   ├── GenericMessage.cs
+│   ├── GenericResponseMessage.cs
+├── Services/
+│   ├── TeamsService.cs
+│   ├── MessagePublisher.cs
+├── OrderToTeamsLibrary.csproj
+OrderToTeamsAPI/
+├── Controllers/
+│   ├── MessageResponseController.cs
+├── Program.cs
+├── OrderToTeamsAPI.csproj
+
+
+namespace OrderToTeamsLibrary.Models
+{
+    public class GenericMessage<T>
+    {
+        public T Data { get; set; }
+    }
+}
+
+
+namespace OrderToTeamsLibrary.Models
+{
+    public class GenericResponseMessage
+    {
+        public bool Accepted { get; set; }
+        public string Response { get; set; }
+    }
+}
+
+
+using MassTransit;
+using OrderToTeamsLibrary.Models;
+using OrderToTeamsLibrary.Services;
+using System.Threading.Tasks;
+
+namespace OrderToTeamsLibrary.Consumers
+{
+    public class GenericConsumer<T> : IConsumer<GenericMessage<T>>
+    {
+        private readonly TeamsService _teamsService;
+        private readonly IRequestClient<GenericMessage<int>> _requestClient;
+
+        public GenericConsumer(TeamsService teamsService, IRequestClient<GenericMessage<int>> requestClient)
+        {
+            _teamsService = teamsService;
+            _requestClient = requestClient;
+        }
+
+        public async Task Consume(ConsumeContext<GenericMessage<T>> context)
+        {
+            var message = context.Message;
+
+            // Send request and await response
+            var response = await _requestClient.GetResponse<GenericResponseMessage>(new GenericMessage<int> { Data = 1 });
+
+            // Process the response
+            var responseMessage = response.Message;
+
+            // Use the response data to send message to Teams
+            await _teamsService.SendMessageToTeams(message, responseMessage);
+        }
+    }
+}
+
+
+using System.Net.Http;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+using OrderToTeamsLibrary.Models;
+
+namespace OrderToTeamsLibrary.Services
+{
+    public class TeamsService
+    {
+        private readonly HttpClient _httpClient;
+        private readonly string _webhookUrl;
+
+        public TeamsService(HttpClient httpClient, string webhookUrl)
+        {
+            _httpClient = httpClient;
+            _webhookUrl = webhookUrl;
+        }
+
+        public async Task SendMessageToTeams<T>(GenericMessage<T> message, GenericResponseMessage response)
+        {
+            var teamsMessage = new
+            {
+                text = $"New Message Received:\nData: {JsonConvert.SerializeObject(message.Data)}\nResponse: {response.Response}",
+                actions = new[]
+                {
+                    new
+                    {
+                        type = "ActionCard",
+                        name = "Respond to Message",
+                        actions = new[]
+                        {
+                            new
+                            {
+                                type = "HttpPOST",
+                                name = "Accept",
+                                target = $"{_webhookUrl}/api/messages/respond",
+                                body = JsonConvert.SerializeObject(new GenericResponseMessage { Accepted = true, Response = "Accepted" })
+                            },
+                            new
+                            {
+                                type = "HttpPOST",
+                                name = "Reject",
+                                target = $"{_webhookUrl}/api/messages/respond",
+                                body = JsonConvert.SerializeObject(new GenericResponseMessage { Accepted = false, Response = "Rejected" })
+                            }
+                        }
+                    }
+                }
+            };
+
+            var jsonMessage = JsonConvert.SerializeObject(teamsMessage);
+            var content = new StringContent(jsonMessage, Encoding.UTF8, "application/json");
+
+            await _httpClient.PostAsync(_webhookUrl, content);
+        }
+    }
+}
+
+
+using MassTransit;
+using OrderToTeamsLibrary.Models;
+using System.Threading.Tasks;
+
+namespace OrderToTeamsLibrary.Services
+{
+    public class MessagePublisher<T>
+    {
+        private readonly IPublishEndpoint _publishEndpoint;
+
+        public MessagePublisher(IPublishEndpoint publishEndpoint)
+        {
+            _publishEndpoint = publishEndpoint;
+        }
+
+        public async Task PublishMessage(GenericMessage<T> message)
+        {
+            await _publishEndpoint.Publish(message);
+        }
+    }
+}
+
+
+using Microsoft.AspNetCore.Mvc;
+using OrderToTeamsLibrary.Models;
+using OrderToTeamsLibrary.Services;
+using System.Threading.Tasks;
+
+namespace OrderToTeamsAPI.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    public class MessageResponseController : ControllerBase
+    {
+        private readonly TeamsService _teamsService;
+
+        public MessageResponseController(TeamsService teamsService)
+        {
+            _teamsService = teamsService;
+        }
+
+        [HttpPost("respond")]
+        public async Task<IActionResult> Respond([FromBody] GenericResponseMessage responseMessage)
+        {
+            await _teamsService.HandleMessageResponse(responseMessage);
+            return Ok();
+        }
+    }
+}
+
+
+
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using OrderToTeamsLibrary.Consumers;
+using OrderToTeamsLibrary.Services;
+using System;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+builder.Services.AddControllers();
+builder.Services.AddHttpClient<TeamsService>(client =>
+{
+    client.BaseAddress = new Uri("https://outlook.office.com/");
+});
+builder.Services.AddSingleton(sp => new TeamsService(sp.GetRequiredService<HttpClient>(), "YOUR_TEAMS_WEBHOOK_URL"));
+
+// Configure MassTransit
+builder.Services.AddMassTransit(x =>
+{
+    // Add consumers
+    x.AddConsumer<GenericConsumer<string>>();
+    x.AddConsumer<GenericConsumer<int>>();
+
+    // Configure RabbitMQ
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.Host("localhost", "/", h => { });
+
+        cfg.ReceiveEndpoint("string_message_queue", e =>
+        {
+            e.ConfigureConsumer<GenericConsumer<string>>(context);
+        });
+
+        cfg.ReceiveEndpoint("int_message_queue", e =>
+        {
+            e.ConfigureConsumer<GenericConsumer<int>>(context);
+        });
+    });
+
+    // Configure Azure Service Bus
+    x.UsingAzureServiceBus((context, cfg) =>
+    {
+        cfg.Host("YOUR_AZURE_SERVICE_BUS_CONNECTION_STRING");
+
+        cfg.ReceiveEndpoint("string_message_queue_service_bus", e =>
+        {
+            e.ConfigureConsumer<GenericConsumer<string>>(context);
+        });
+
+        cfg.ReceiveEndpoint("int_message_queue_service_bus", e =>
+        {
+            e.ConfigureConsumer<GenericConsumer<int>>(context);
+        });
+    });
+});
+
+builder.Services.AddMassTransitHostedService();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+app.UseHttpsRedirection();
+
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();
+
+
