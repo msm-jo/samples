@@ -1,0 +1,141 @@
+dotnet new classlib -n MessagingLibrary
+
+dotnet add package MassTransit
+dotnet add package MassTransit.RabbitMQ
+dotnet add package MassTransit.Azure.ServiceBus.Core
+
+namespace MessagingLibrary
+{
+    public interface IMessageBroker
+    {
+        Task SendMessage<T>(T message, string destination) where T : class;
+        void ConfigureReceiveEndpoint<T>(string queueName, Action<T> onMessageReceived) where T : class;
+    }
+}
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using System;
+
+namespace MessagingLibrary
+{
+    public class MassTransitMessageBroker : IMessageBroker
+    {
+        private readonly IBusControl _bus;
+
+        public MassTransitMessageBroker(IServiceCollection services, string environment, string azureServiceBusConnectionString = null)
+        {
+            services.AddMassTransit(x =>
+            {
+                if (environment == "Development")
+                {
+                    x.UsingRabbitMq((context, cfg) =>
+                    {
+                        cfg.Host("localhost", "/", h =>
+                        {
+                            h.Username("guest");
+                            h.Password("guest");
+                        });
+                    });
+                }
+                else
+                {
+                    x.UsingAzureServiceBus((context, cfg) =>
+                    {
+                        cfg.Host(azureServiceBusConnectionString);
+                    });
+                }
+            });
+
+            _bus = services.BuildServiceProvider().GetRequiredService<IBusControl>();
+            _bus.Start();
+        }
+
+        public async Task SendMessage<T>(T message, string destination) where T : class
+        {
+            var sendEndpoint = await _bus.GetSendEndpoint(new Uri(destination));
+            await sendEndpoint.Send(message);
+        }
+
+        public void ConfigureReceiveEndpoint<T>(string queueName, Action<T> onMessageReceived) where T : class
+        {
+            var consumerType = typeof(GenericConsumer<T>);
+            var consumer = Activator.CreateInstance(consumerType, onMessageReceived);
+
+            _bus.ConnectReceiveEndpoint(queueName, cfg =>
+            {
+                cfg.Instance(consumer);
+            });
+        }
+    }
+
+    public class GenericConsumer<T> : IConsumer<T> where T : class
+    {
+        private readonly Action<T> _onMessageReceived;
+
+        public GenericConsumer(Action<T> onMessageReceived)
+        {
+            _onMessageReceived = onMessageReceived;
+        }
+
+        public Task Consume(ConsumeContext<T> context)
+        {
+            _onMessageReceived(context.Message);
+            return Task.CompletedTask;
+        }
+    }
+}
+
+
+dotnet pack -o ./nupkgs
+dotnet nuget push ./nupkgs/MessagingLibrary.x.x.x.nupkg -k YOUR_API_KEY -s https://api.nuget.org/v3/index.json
+
+
+dotnet add package MessagingLibrary
+
+using MessagingLibrary;
+using Microsoft.Extensions.DependencyInjection;
+
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddSingleton<IMessageBroker>(provider =>
+        {
+            string environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+            string azureServiceBusConnectionString = "your-azure-service-bus-connection-string"; // Use appropriate configuration
+
+            return new MassTransitMessageBroker(services, environment, azureServiceBusConnectionString);
+        });
+    }
+}
+
+public class MessageService
+{
+    private readonly IMessageBroker _messageBroker;
+
+    public MessageService(IMessageBroker messageBroker)
+    {
+        _messageBroker = messageBroker;
+    }
+
+    public async Task SendMessage(string text)
+    {
+        await _messageBroker.SendMessage(new YourMessage { Text = text }, "queue-name-or-topic-uri");
+    }
+
+    public void ReceiveMessage()
+    {
+        _messageBroker.ConfigureReceiveEndpoint<YourMessage>("queue-name", message =>
+        {
+            Console.WriteLine("Received message: " + message.Text);
+        });
+    }
+}
+
+
+
+
+
+
+
