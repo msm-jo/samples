@@ -1,0 +1,63 @@
+using MassTransit;
+using System;
+using System.Threading.Tasks;
+
+public class MessagingWrapper : IMessagingWrapper
+{
+    private readonly IBusControl _busControl;
+
+    public MessagingWrapper(MessagingConfiguration config)
+    {
+        _busControl = ConfigureBus(config);
+        _busControl.StartAsync().Wait();
+    }
+
+    private IBusControl ConfigureBus(MessagingConfiguration config)
+    {
+        return config.Transport switch
+        {
+            "AzureServiceBus" => Bus.Factory.CreateUsingAzureServiceBus(bus =>
+            {
+                bus.Host(config.ConnectionString, h =>
+                {
+                    h.OperationTimeout = TimeSpan.FromSeconds(30);
+                });
+            }),
+            "RabbitMQ" => Bus.Factory.CreateUsingRabbitMq(bus =>
+            {
+                bus.Host(new Uri(config.ConnectionString), h => { });
+            }),
+            _ => throw new ArgumentException("Invalid transport type")
+        };
+    }
+
+    public async Task SendMessageAsync<T>(T message, string queueName) where T : class
+    {
+        var sendEndpoint = await _busControl.GetSendEndpoint(new Uri($"queue:{queueName}"));
+        await sendEndpoint.Send(message);
+    }
+}
+
+using System;
+using System.Threading.Tasks;
+using MessagingWrapper;
+
+class Program
+{
+    static async Task Main(string[] args)
+    {
+        var config = new MessagingConfiguration
+        {
+            Transport = "RabbitMQ", // or "AzureServiceBus"
+            ConnectionString = "your-connection-string"
+        };
+
+        IMessagingWrapper messagingWrapper = new MessagingWrapper(config);
+
+        var message = new { Text = "Hello, World!" };
+
+        await messagingWrapper.SendMessageAsync(message, "test-queue");
+
+        Console.WriteLine("Message sent.");
+    }
+}
