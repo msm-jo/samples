@@ -1,0 +1,37 @@
+Here is a comprehensive overview of Azure Service Bus pricing for 2024, covering all options and tiers:
+
+### Basic Tier
+- **Price per Million Operations:** $0.05
+- **Brokered Connections:** 100 included
+- **Message Size Limit:** 256 KB
+- **Maximum Queues/Topics:** 10
+
+### Standard Tier
+- **Price per Million Operations:** $0.05
+- **Brokered Connections:** 1,000 included, $0.10 per connection above limit
+- **Message Size Limit:** 256 KB
+- **Maximum Queues/Topics:** 1,000
+
+### Premium Tier
+- **Pricing Structure:** Billed based on messaging units
+- **Messaging Units:** Available in 1, 2, 4, 8, and 16 messaging units
+- **Price per Messaging Unit:** $0.50 per hour per unit
+- **Brokered Connections:** Unlimited
+- **Message Size Limit:** Up to 100 MB
+- **Features:** Includes advanced features such as VNET integration, isolation, and higher throughput
+
+### Key Additional Features and Pricing Considerations:
+- **Large Messages:** Only available in Premium Tier, supports up to 100 MB
+- **Network Security:** Features like VNET integration are only available in Premium Tier
+- **Auto-Scaling:** Premium tier supports preemptive and reactive scaling based on workload requirements
+- **Encryption:** Premium tier supports data encryption at rest with customer-managed keys
+
+### Support Plans:
+- **Developer Support:** $29/month
+- **Standard Support:** $100/month
+- **Professional Direct Support:** $1000/month
+- **Premier Support:** Custom pricing
+
+For more detailed information, you can explore the full pricing breakdown on the [Microsoft Azure Pricing page](https://azure.microsoft.com/en-us/pricing/details/service-bus/) and additional insights from [Microsoft Learn](https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-premium-messaging).
+
+These pricing details provide a broad understanding of the costs associated with Azure Service Bus, allowing you to choose the right tier based on your requirements for development, testing, and production environments.
