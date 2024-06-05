@@ -1,0 +1,151 @@
+using System;
+using System.Text;
+using System.Threading.Tasks;
+using MassTransit;
+using Newtonsoft.Json;
+
+public interface IMessageHandler<T>
+{
+    Task PublishMessage(T message);
+    Task<T> ReceiveMessage();
+}
+
+public class ServiceBusMessageHandler<T> : IMessageHandler<T>
+{
+    private readonly IBusControl _busControl;
+
+    public ServiceBusMessageHandler(string connectionString)
+    {
+        _busControl = Bus.Factory.CreateUsingAzureServiceBus(cfg =>
+        {
+            cfg.Host(connectionString);
+        });
+
+        _busControl.Start();
+    }
+
+    public async Task PublishMessage(T message)
+    {
+        var sendEndpoint = await _busControl.GetSendEndpoint(new Uri("queue:my-queue"));
+        var jsonMessage = JsonConvert.SerializeObject(message);
+        await sendEndpoint.Send(jsonMessage);
+    }
+
+    public Task<T> ReceiveMessage()
+    {
+        throw new NotImplementedException();
+    }
+}
+
+public class RabbitMQMessageHandler<T> : IMessageHandler<T>
+{
+    private readonly IBusControl _busControl;
+
+    public RabbitMQMessageHandler(string host, string username, string password)
+    {
+        _busControl = Bus.Factory.CreateUsingRabbitMq(cfg =>
+        {
+            cfg.Host(new Uri(host), h =>
+            {
+                h.Username(username);
+                h.Password(password);
+            });
+        });
+
+        _busControl.Start();
+    }
+
+    public async Task PublishMessage(T message)
+    {
+        var sendEndpoint = await _busControl.GetSendEndpoint(new Uri("queue:my-queue"));
+        var jsonMessage = JsonConvert.SerializeObject(message);
+        await sendEndpoint.Send(jsonMessage);
+    }
+
+    public Task<T> ReceiveMessage()
+    {
+        throw new NotImplementedException();
+    }
+}
+
+dotnet add reference ../MessagingLibrary/MessagingLibrary.csproj
+dotnet add package MassTransit.AspNetCore
+dotnet add package Microsoft.Extensions.DependencyInjection
+
+using MassTransit;
+using MessagingLibrary;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+builder.Services.AddControllers();
+
+string serviceBusConnectionString = "your-service-bus-connection-string";
+string rabbitMqHost = "your-rabbitmq-host";
+string rabbitMqUsername = "your-rabbitmq-username";
+string rabbitMqPassword = "your-rabbitmq-password";
+
+// Register the message handlers
+builder.Services.AddSingleton<IMessageHandler<YourMessageType>>(sp =>
+    new ServiceBusMessageHandler<YourMessageType>(serviceBusConnectionString));
+builder.Services.AddSingleton<IMessageHandler<YourMessageType>>(sp =>
+    new RabbitMQMessageHandler<YourMessageType>(rabbitMqHost, rabbitMqUsername, rabbitMqPassword));
+
+var app = builder.Build();
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();
+
+using Microsoft.AspNetCore.Mvc;
+using MessagingLibrary;
+using System.Threading.Tasks;
+
+[ApiController]
+[Route("api/[controller]")]
+public class MessagingController : ControllerBase
+{
+    private readonly IMessageHandler<YourMessageType> _serviceBusHandler;
+    private readonly IMessageHandler<YourMessageType> _rabbitMqHandler;
+
+    public MessagingController(
+        IMessageHandler<YourMessageType> serviceBusHandler,
+        IMessageHandler<YourMessageType> rabbitMqHandler)
+    {
+        _serviceBusHandler = serviceBusHandler;
+        _rabbitMqHandler = rabbitMqHandler;
+    }
+
+    [HttpPost("publish/servicebus")]
+    public async Task<IActionResult> PublishToServiceBus([FromBody] YourMessageType message)
+    {
+        await _serviceBusHandler.PublishMessage(message);
+        return Ok();
+    }
+
+    [HttpPost("publish/rabbitmq")]
+    public async Task<IActionResult> PublishToRabbitMq([FromBody] YourMessageType message)
+    {
+        await _rabbitMqHandler.PublishMessage(message);
+        return Ok();
+    }
+
+    // Implement similar methods for receiving messages if needed
+}
+public class YourMessageType
+{
+    public string Property1 { get; set; }
+    public int Property2 { get; set; }
+}
+
+
+
+
+
+
