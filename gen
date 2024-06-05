@@ -1,0 +1,149 @@
+public class MessageConsumer<T> : IConsumer<YourMessage<T>>
+{
+    private readonly Func<Type, object> _modelFactory;
+
+    public MessageConsumer(Func<Type, object> modelFactory)
+    {
+        _modelFactory = modelFactory;
+    }
+
+    public Task Consume(ConsumeContext<YourMessage<T>> context)
+    {
+        var message = context.Message;
+        var modelType = typeof(T);
+        var model = _modelFactory(modelType);
+
+        Console.WriteLine($"Received message from queue '{message.QueueName}': {message.Payload}");
+        Console.WriteLine($"Using model type: {modelType.Name}");
+
+        // Process the message and the model here
+        // Example: dynamic processing based on the model type
+        dynamic dynamicModel = Convert.ChangeType(model, modelType);
+        // Do something with dynamicModel and message.Payload
+
+        return Task.CompletedTask;
+    }
+}
+
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddTransient<ModelA>();
+        services.AddTransient<ModelB>();
+
+        services.AddTransient<Func<Type, object>>(serviceProvider => type =>
+        {
+            return type switch
+            {
+                Type t when t == typeof(ModelA) => serviceProvider.GetService<ModelA>(),
+                Type t when t == typeof(ModelB) => serviceProvider.GetService<ModelB>(),
+                _ => throw new KeyNotFoundException($"Model of type '{type.Name}' is not registered")
+            };
+        });
+
+        services.AddMassTransit(x =>
+        {
+            x.AddConsumer<MessageConsumer<string>>(); // Register consumer for string payload
+            x.AddConsumer<MessageConsumer<object>>(); // Register consumer for object payload
+
+            x.UsingAzureServiceBus((context, cfg) =>
+            {
+                cfg.Host("your-azure-service-bus-connection-string");
+
+                cfg.ReceiveEndpoint("your-queue-name", e =>
+                {
+                    e.ConfigureConsumer<MessageConsumer<string>>(context);
+                    e.ConfigureConsumer<MessageConsumer<object>>(context);
+                });
+            });
+        });
+
+        services.AddMassTransitHostedService();
+    }
+}
+
+public class MessagePublisher
+{
+    private readonly IBus _bus;
+
+    public MessagePublisher(IBus bus)
+    {
+        _bus = bus;
+    }
+
+    public async Task SendMessage<T>(T payload, string queueName)
+    {
+        var message = new YourMessage<T>
+        {
+            Payload = payload,
+            QueueName = queueName
+        };
+
+        await _bus.Publish(message);
+    }
+}
+public class MyApp
+{
+    private readonly MessagePublisher _messagePublisher;
+
+    public MyApp(MessagePublisher messagePublisher)
+    {
+        _messagePublisher = messagePublisher;
+    }
+
+    public async Task Run()
+    {
+        await _messagePublisher.SendMessage("Hello, world!", "your-queue-name");
+        await _messagePublisher.SendMessage(new { Name = "John", Age = 30 }, "your-queue-name");
+    }
+}
+
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddTransient<ModelA>();
+        services.AddTransient<ModelB>();
+
+        services.AddTransient<Func<Type, object>>(serviceProvider => type =>
+        {
+            return type switch
+            {
+                Type t when t == typeof(ModelA) => serviceProvider.GetService<ModelA>(),
+                Type t when t == typeof(ModelB) => serviceProvider.GetService<ModelB>(),
+                _ => throw new KeyNotFoundException($"Model of type '{type.Name}' is not registered")
+            };
+        });
+
+        services.AddMassTransit(x =>
+        {
+            x.AddConsumer<MessageConsumer<string>>(); // Register consumer for string payload
+            x.AddConsumer<MessageConsumer<object>>(); // Register consumer for object payload
+
+            x.UsingAzureServiceBus((context, cfg) =>
+            {
+                cfg.Host("your-azure-service-bus-connection-string");
+
+                cfg.ReceiveEndpoint("your-queue-name", e =>
+                {
+                    e.ConfigureConsumer<MessageConsumer<string>>(context);
+                    e.ConfigureConsumer<MessageConsumer<object>>(context);
+                });
+            });
+        });
+
+        services.AddMassTransitHostedService();
+
+        services.AddTransient<MessagePublisher>();
+        services.AddTransient<MyApp>();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        var serviceProvider = app.ApplicationServices;
+        var myApp = serviceProvider.GetService<MyApp>();
+        myApp.Run().GetAwaiter().GetResult();
+    }
+}
+
