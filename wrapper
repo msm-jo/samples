@@ -1,0 +1,499 @@
+public interface IRequestMessage<T>
+{
+    T Payload { get; }
+    Guid CorrelationId { get; }
+}
+
+public interface IResponseMessage<T>
+{
+    T Payload { get; }
+    Guid CorrelationId { get; }
+    string ResponseText { get; }
+}
+
+
+public class RequestMessage<T> : IRequestMessage<T>
+{
+    public T Payload { get; }
+    public Guid CorrelationId { get; }
+
+    public RequestMessage(T payload, Guid correlationId)
+    {
+        Payload = payload;
+        CorrelationId = correlationId;
+    }
+}
+
+public class ResponseMessage<T> : IResponseMessage<T>
+{
+    public T Payload { get; }
+    public Guid CorrelationId { get; }
+    public string ResponseText { get; }
+
+    public ResponseMessage(T payload, Guid correlationId, string responseText)
+    {
+        Payload = payload;
+        CorrelationId = correlationId;
+        ResponseText = responseText;
+    }
+}
+
+public interface IBusinessLogic<TRequest, TResponse>
+{
+    Task<TResponse> ProcessAsync(TRequest message);
+}
+using System;
+using System.Threading.Tasks;
+
+public class BusinessLogic<TRequest, TResponse> : IBusinessLogic<TRequest, TResponse>
+{
+    private readonly Func<TRequest, Task<TResponse>> _processFunc;
+
+    public BusinessLogic(Func<TRequest, Task<TResponse>> processFunc)
+    {
+        _processFunc = processFunc;
+    }
+
+    public Task<TResponse> ProcessAsync(TRequest message)
+    {
+        return _processFunc(message);
+    }
+}
+
+
+using MassTransit;
+using System.Threading.Tasks;
+
+public class GenericRequestConsumer<TRequest, TResponse> : IConsumer<IRequestMessage<TRequest>>
+    where TRequest : class
+    where TResponse : class
+{
+    private readonly IBusinessLogic<TRequest, TResponse> _businessLogic;
+
+    public GenericRequestConsumer(IBusinessLogic<TRequest, TResponse> businessLogic)
+    {
+        _businessLogic = businessLogic;
+    }
+
+    public async Task Consume(ConsumeContext<IRequestMessage<TRequest>> context)
+    {
+        var requestMessage = context.Message;
+
+        // Process the message using the business logic
+        var responsePayload = await _businessLogic.ProcessAsync(requestMessage.Payload);
+
+        // Create a response message
+        var responseMessage = new ResponseMessage<TResponse>(
+            responsePayload,
+            requestMessage.CorrelationId,
+            $"Processed: {requestMessage.Payload}");
+
+        // Respond to the request
+        await context.RespondAsync(responseMessage);
+    }
+}
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using System;
+
+public static class MassTransitConfigurator
+{
+    public static IServiceCollection AddMassTransitWithRabbitMQ<TConsumer, TRequest, TResponse>(this IServiceCollection services, string rabbitMqUri, string queueName, Func<TRequest, Task<TResponse>> processFunc)
+        where TConsumer : class, IConsumer<IRequestMessage<TRequest>>
+        where TRequest : class
+        where TResponse : class
+    {
+        services.AddMassTransit(x =>
+        {
+            x.UsingRabbitMq((context, cfg) =>
+            {
+                cfg.Host(new Uri(rabbitMqUri));
+                cfg.ReceiveEndpoint(queueName, e =>
+                {
+                    e.ConfigureConsumer<TConsumer>(context);
+                });
+            });
+
+            x.AddConsumer<TConsumer>();
+        });
+
+        services.AddMassTransitHostedService();
+
+        // Register the generic BusinessLogic and other required services
+        services.AddTransient<IBusinessLogic<TRequest, TResponse>>(provider => new BusinessLogic<TRequest, TResponse>(processFunc));
+        services.AddTransient<MessagePublisher>();
+        services.AddTransient<MessageSendingService>();
+
+        return services;
+    }
+}
+
+using MassTransit;
+using System.Threading.Tasks;
+
+public class MessagePublisher
+{
+    private readonly IBus _bus;
+
+    public MessagePublisher(IBus bus)
+    {
+        _bus = bus;
+    }
+
+    public async Task<IResponseMessage<TResponse>> PublishRequestMessage<TRequest, TResponse>(IRequestMessage<TRequest> requestMessage)
+        where TRequest : class
+        where TResponse : class
+    {
+        var client = _bus.CreateRequestClient<IRequestMessage<TRequest>>();
+        var response = await client.GetResponse<IResponseMessage<TResponse>>(requestMessage);
+        return response.Message;
+    }
+}
+using System.Threading.Tasks;
+
+public class MessageSendingService
+{
+    private readonly MessagePublisher _publisher;
+
+    public MessageSendingService(MessagePublisher publisher)
+    {
+        _publisher = publisher;
+    }
+
+    public async Task<IResponseMessage<TResponse>> SendRequestMessage<TRequest, TResponse>(IRequestMessage<TRequest> requestMessage)
+        where TRequest : class
+        where TResponse : class
+    {
+        return await _publisher.PublishRequestMessage<TRequest, TResponse>(requestMessage);
+    }
+}
+public class Order
+{
+    public int OrderId { get; set; }
+    public string ProductName { get; set; }
+    public decimal Price { get; set; }
+    public int Quantity { get; set; }
+}
+
+public class OrderResponse
+{
+    public int OrderId { get; set; }
+    public string ProductName { get; set; }
+    public decimal Price { get; set; }
+    public int Quantity { get; set; }
+    public string Status { get; set; }
+}
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System;
+using System.Threading.Tasks;
+
+class Program
+{
+    static async Task Main(string[] args)
+    {
+        Func<Order, Task<OrderResponse>> processOrder = async order =>
+        {
+            if (order.Quantity > 10)
+            {
+                return await Task.FromResult(new OrderResponse
+                {
+                    OrderId = order.OrderId,
+                    ProductName = order.ProductName,
+                    Price = order.Price,
+                    Quantity = order.Quantity,
+                    Status = "Accepted"
+                });
+            }
+            else
+            {
+                return await Task.FromResult(new OrderResponse
+                {
+                    OrderId = order.OrderId,
+                    ProductName = order.ProductName,
+                    Price = order.Price,
+                    Quantity = order.Quantity,
+                    Status = "Rejected"
+                });
+            }
+        };
+
+        string queueName = "order-queue";
+
+        var host = Host.CreateDefaultBuilder(args)
+            .ConfigureServices((context, services) =>
+            {
+                // Example for Order message type
+                services.AddMassTransitWithRabbitMQ<GenericRequestConsumer<Order, OrderResponse>, Order, OrderResponse>("rabbitmq://localhost", queueName, processOrder);
+            })
+            .Build();
+
+        var messageSendingService = host.Services.GetRequiredService<MessageSendingService>();
+
+        // Sending a request message
+        var requestMessage = new RequestMessage<Order>(
+            new Order
+            {
+                OrderId = 1,
+                ProductName = "Product A",
+                Price = 100.0m,
+                Quantity = 12
+            },
+            Guid.NewGuid()
+        );
+
+        var responseMessage = await messageSendingService.SendRequestMessage<Order, OrderResponse>(requestMessage);
+        Console.WriteLine($"Received response: {responseMessage.ResponseText} with Status: {responseMessage.Payload.Status}");
+
+        await host.RunAsync();
+    }
+}
+
+// Models/Order.cs
+public class Order
+{
+    public int OrderId { get; set; }
+    public string ProductName { get; set; }
+    public decimal Price { get; set; }
+    public int Quantity { get; set; }
+}
+
+// Models/OrderResponse.cs
+public class OrderResponse
+{
+    public int OrderId { get; set; }
+    public string ProductName { get; set; }
+    public decimal Price { get; set; }
+    public int Quantity { get; set; }
+    public string Status { get; set; }
+}
+
+using Microsoft.AspNetCore.Mvc;
+using System;
+using System.Threading.Tasks;
+
+[ApiController]
+[Route("api/[controller]")]
+public class OrderController : ControllerBase
+{
+    private readonly MessageSendingService _messageSendingService;
+
+    public OrderController(MessageSendingService messageSendingService)
+    {
+        _messageSendingService = messageSendingService;
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> CreateOrder([FromBody] Order order)
+    {
+        var requestMessage = new RequestMessage<Order>(
+            order,
+            Guid.NewGuid()
+        );
+
+        var responseMessage = await _messageSendingService.SendRequestMessage<Order, OrderResponse>(requestMessage);
+
+        return Ok(responseMessage);
+    }
+}
+
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System.Threading.Tasks;
+
+public class Program
+{
+    public static async Task Main(string[] args)
+    {
+        var condition = new Func<Order, Task<OrderResponse>>(order =>
+        {
+            if (order.Quantity > 10)
+            {
+                return Task.FromResult(new OrderResponse
+                {
+                    OrderId = order.OrderId,
+                    ProductName = order.ProductName,
+                    Price = order.Price,
+                    Quantity = order.Quantity,
+                    Status = "Accepted"
+                });
+            }
+            else
+            {
+                return Task.FromResult(new OrderResponse
+                {
+                    OrderId = order.OrderId,
+                    ProductName = order.ProductName,
+                    Price = order.Price,
+                    Quantity = order.Quantity,
+                    Status = "Rejected"
+                });
+            }
+        });
+
+        var host = Host.CreateDefaultBuilder(args)
+            .ConfigureServices((context, services) =>
+            {
+                services.AddMassTransitWithRabbitMQ<GenericRequestConsumer<Order, OrderResponse>, Order, OrderResponse>(
+                    "rabbitmq://localhost", "order-queue", condition);
+
+                services.AddControllers();
+            })
+            .ConfigureWebHostDefaults(webBuilder =>
+            {
+                webBuilder.UseStartup<Startup>();
+            })
+            .Build();
+
+        await host.RunAsync();
+    }
+}
+
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+public class Startup
+{
+    public Startup(IConfiguration configuration)
+    {
+        Configuration = configuration;
+    }
+
+    public IConfiguration Configuration { get; }
+
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddControllers();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        if (env.IsDevelopment())
+        {
+            app.UseDeveloperExceptionPage();
+        }
+
+        app.UseRouting();
+
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapControllers();
+        });
+    }
+}
+
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System.Threading.Tasks;
+
+public class Program
+{
+    public static async Task Main(string[] args)
+    {
+        var condition = new Func<Order, Task<OrderResponse>>(order =>
+        {
+            if (order.Quantity > 10)
+            {
+                return Task.FromResult(new OrderResponse
+                {
+                    OrderId = order.OrderId,
+                    ProductName = order.ProductName,
+                    Price = order.Price,
+                    Quantity = order.Quantity,
+                    Status = "Accepted"
+                });
+            }
+            else
+            {
+                return Task.FromResult(new OrderResponse
+                {
+                    OrderId = order.OrderId,
+                    ProductName = order.ProductName,
+                    Price = order.Price,
+                    Quantity = order.Quantity,
+                    Status = "Rejected"
+                });
+            }
+        });
+
+        var host = Host.CreateDefaultBuilder(args)
+            .ConfigureServices((context, services) =>
+            {
+                services.AddMassTransitWithRabbitMQ<GenericRequestConsumer<Order, OrderResponse>, Order, OrderResponse>(
+                    "rabbitmq://localhost", "order-queue", condition);
+
+                services.AddControllers();
+            })
+            .ConfigureWebHostDefaults(webBuilder =>
+            {
+                webBuilder.UseStartup<Startup>();
+            })
+            .Build();
+
+        await host.RunAsync();
+    }
+}
+
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+public class Startup
+{
+    public Startup(IConfiguration configuration)
+    {
+        Configuration = configuration;
+    }
+
+    public IConfiguration Configuration { get; }
+
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddControllers();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        if (env.IsDevelopment())
+        {
+            app.UseDeveloperExceptionPage();
+        }
+
+        app.UseRouting();
+
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapControllers();
+        });
+    }
+}
+
+public class Order
+{
+    public int OrderId { get; set; }
+    public string ProductName { get; set; }
+    public decimal Price { get; set; }
+    public int Quantity { get; set; }
+}
+
+public class OrderResponse
+{
+    public int OrderId { get; set; }
+    public string ProductName { get; set; }
+    public decimal Price { get; set; }
+    public int Quantity { get; set; }
+    public string Status { get; set; }
+}
+
+
+
+
+
+
+
