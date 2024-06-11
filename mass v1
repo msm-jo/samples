@@ -1,0 +1,197 @@
+using System.Threading.Tasks;
+
+namespace MassTransitLibrary
+{
+    public interface IMessageHandler<TMessage>
+    {
+        Task HandleAsync(TMessage message);
+    }
+
+    public class GenericMessageHandler<TMessage> : IMessageHandler<TMessage>
+    {
+        public Task HandleAsync(TMessage message)
+        {
+            Console.WriteLine($"Handled message of type {typeof(TMessage).Name}: {message}");
+            return Task.CompletedTask;
+        }
+    }
+}
+
+using MassTransit;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Threading.Tasks;
+
+namespace MassTransitLibrary
+{
+    public class GenericConsumer<TMessage> : IConsumer<TMessage>
+    {
+        private readonly IMessageHandler<TMessage> _messageHandler;
+        private readonly ILogger<GenericConsumer<TMessage>> _logger;
+
+        public GenericConsumer(IMessageHandler<TMessage> messageHandler, ILogger<GenericConsumer<TMessage>> logger)
+        {
+            _messageHandler = messageHandler;
+            _logger = logger;
+        }
+
+        public async Task Consume(ConsumeContext<TMessage> context)
+        {
+            try
+            {
+                await _messageHandler.HandleAsync(context.Message);
+                _logger.LogInformation("Message processed successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing message");
+                throw;
+            }
+        }
+    }
+}
+
+using MassTransit;
+using System.Threading.Tasks;
+
+namespace MassTransitLibrary
+{
+    public interface IMessagePublisher
+    {
+        Task PublishAsync<TMessage>(TMessage message);
+    }
+
+    public class MessagePublisher : IMessagePublisher
+    {
+        private readonly IBus _bus;
+
+        public MessagePublisher(IBus bus)
+        {
+            _bus = bus;
+        }
+
+        public Task PublishAsync<TMessage>(TMessage message)
+        {
+            return _bus.Publish(message);
+        }
+    }
+}
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using System;
+
+namespace MassTransitLibrary
+{
+    public static class ServiceExtensions
+    {
+        public static IServiceCollection AddMassTransitConsumer<TMessage>(this IServiceCollection services, string queueName, int retryCount = 3, TimeSpan? retryInterval = null)
+        {
+            retryInterval ??= TimeSpan.FromSeconds(5);
+
+            services.AddMassTransit(x =>
+            {
+                x.AddConsumer<GenericConsumer<TMessage>>();
+
+                x.UsingRabbitMq((ctx, cfg) =>
+                {
+                    cfg.Host("rabbitmq://localhost", h =>
+                    {
+                        h.Username("guest");
+                        h.Password("guest");
+                    });
+
+                    cfg.ReceiveEndpoint(queueName, e =>
+                    {
+                        e.PrefetchCount = 16;
+                        e.UseMessageRetry(r => r.Interval(retryCount, retryInterval.Value));
+                        e.ConfigureConsumer<GenericConsumer<TMessage>>(ctx);
+                    });
+                });
+            });
+
+            services.AddMassTransitHostedService();
+
+            services.AddTransient<IMessageHandler<TMessage>, GenericMessageHandler<TMessage>>();
+            services.AddTransient(typeof(GenericConsumer<TMessage>));
+
+            return services;
+        }
+
+        public static IServiceCollection AddMassTransitPublisher(this IServiceCollection services)
+        {
+            services.AddMassTransit(x =>
+            {
+                x.UsingRabbitMq((ctx, cfg) =>
+                {
+                    cfg.Host("rabbitmq://localhost", h =>
+                    {
+                        h.Username("guest");
+                        h.Password("guest");
+                    });
+                });
+            });
+
+            services.AddMassTransitHostedService();
+
+            services.AddTransient<IMessagePublisher, MessagePublisher>();
+
+            return services;
+        }
+    }
+}
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using MassTransitLibrary;
+using System;
+
+namespace MyApp
+{
+    public class Program
+    {
+        public static void Main(string[] args)
+        {
+            var host = Host.CreateDefaultBuilder(args)
+                .ConfigureServices((context, services) =>
+                {
+                    services.AddMassTransitConsumer<MyMessage>("my-queue", retryCount: 5, retryInterval: TimeSpan.FromSeconds(10));
+                    services.AddMassTransitPublisher();
+                })
+                .Build();
+
+            host.Run();
+        }
+    }
+
+    public class MyMessage
+    {
+        public string Text { get; set; }
+    }
+}
+
+using System.Threading.Tasks;
+using MassTransitLibrary;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+namespace MyApp
+{
+    public class MessagePublisherService
+    {
+        private readonly IMessagePublisher _messagePublisher;
+
+        public MessagePublisherService(IMessagePublisher messagePublisher)
+        {
+            _messagePublisher = messagePublisher;
+        }
+
+        public async Task PublishMessage()
+        {
+            var message = new MyMessage { Text = "Hello, World!" };
+            await _messagePublisher.PublishAsync(message);
+        }
+    }
+}
+
+
