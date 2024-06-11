@@ -1,0 +1,73 @@
+namespace ResponseApp
+{
+    public class MyRequest
+    {
+        public string Text { get; set; }
+    }
+
+    public class MyResponse
+    {
+        public string ResponseText { get; set; }
+    }
+}
+
+using MassTransit;
+using System.Threading.Tasks;
+
+namespace ResponseApp
+{
+    public class MyRequestConsumer : IConsumer<MyRequest>
+    {
+        public async Task Consume(ConsumeContext<MyRequest> context)
+        {
+            Console.WriteLine($"Received request: {context.Message.Text}");
+
+            await context.RespondAsync(new MyResponse
+            {
+                ResponseText = "Hello from ResponseApp"
+            });
+        }
+    }
+}
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+namespace ResponseApp
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            var host = Host.CreateDefaultBuilder(args)
+                .ConfigureServices((context, services) =>
+                {
+                    services.AddMassTransit(x =>
+                    {
+                        x.AddConsumer<MyRequestConsumer>();
+
+                        x.UsingRabbitMq((ctx, cfg) =>
+                        {
+                            cfg.Host("rabbitmq://localhost", h =>
+                            {
+                                h.Username("guest");
+                                h.Password("guest");
+                            });
+
+                            cfg.ReceiveEndpoint("request_queue", e =>
+                            {
+                                e.ConfigureConsumer<MyRequestConsumer>(ctx);
+                            });
+                        });
+                    });
+
+                    services.AddMassTransitHostedService();
+                })
+                .Build();
+
+            host.Run();
+        }
+    }
+}
+
+
