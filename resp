@@ -1,0 +1,193 @@
+using MassTransit;
+using System.Threading.Tasks;
+
+public interface IMessagePublisher
+{
+    Task Publish<T>(T message) where T : class;
+}
+
+public class MessagePublisher : IMessagePublisher
+{
+    private readonly IPublishEndpoint _publishEndpoint;
+
+    public MessagePublisher(IPublishEndpoint publishEndpoint)
+    {
+        _publishEndpoint = publishEndpoint;
+    }
+
+    public async Task Publish<T>(T message) where T : class
+    {
+        await _publishEndpoint.Publish(message);
+    }
+}
+
+
+using MassTransit;
+using System.Threading.Tasks;
+
+public class GenericConsumer<T> : IConsumer<T> where T : class
+{
+    private readonly IBusinessLogic<T> _businessLogic;
+
+    public GenericConsumer(IBusinessLogic<T> businessLogic)
+    {
+        _businessLogic = businessLogic;
+    }
+
+    public async Task Consume(ConsumeContext<T> context)
+    {
+        await _businessLogic.Handle(context.Message);
+    }
+}
+
+public interface IBusinessLogic<T>
+{
+    Task Handle(T message);
+}
+
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using MassTransit;
+using Library;
+
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddMassTransit(x =>
+        {
+            x.UsingRabbitMq((context, cfg) =>
+            {
+                cfg.Host("rabbitmq://localhost");
+            });
+        });
+
+        services.AddSingleton<IMessagePublisher, MessagePublisher>();
+        services.AddControllers();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        if (env.IsDevelopment())
+        {
+            app.UseDeveloperExceptionPage();
+        }
+
+        app.UseRouting();
+
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapControllers();
+        });
+    }
+}
+using Microsoft.AspNetCore.Mvc;
+using Library;
+using System.Threading.Tasks;
+
+[ApiController]
+[Route("api/[controller]")]
+public class OrderController : ControllerBase
+{
+    private readonly IMessagePublisher _messagePublisher;
+
+    public OrderController(IMessagePublisher messagePublisher)
+    {
+        _messagePublisher = messagePublisher;
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> CreateOrder([FromBody] Order order)
+    {
+        await _messagePublisher.Publish(order);
+        return Ok();
+    }
+}
+public class Order
+{
+    public int OrderId { get; set; }
+    public string ProductName { get; set; }
+    public int Quantity { get; set; }
+}
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MassTransit" Version="7.2.4" />
+    <PackageReference Include="MassTransit.AspNetCore" Version="7.2.4" />
+    <PackageReference Include="MassTransit.RabbitMQ" Version="7.2.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\\Library\\Library.csproj" />
+  </ItemGroup>
+
+</Project>
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using MassTransit;
+using Library;
+
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddScoped<IBusinessLogic<Order>, OrderBusinessLogic>();
+
+        services.AddMassTransit(x =>
+        {
+            x.AddConsumer<GenericConsumer<Order>>();
+
+            x.UsingRabbitMq((context, cfg) =>
+            {
+                cfg.Host("rabbitmq://localhost");
+                cfg.ReceiveEndpoint("order_queue", e =>
+                {
+                    e.ConfigureConsumer<GenericConsumer<Order>>(context);
+                });
+            });
+        });
+
+        services.AddMassTransitHostedService();
+        services.AddControllers();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        if (env.IsDevelopment())
+        {
+            app.UseDeveloperExceptionPage();
+        }
+
+        app.UseRouting();
+
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapControllers();
+        });
+    }
+}
+using System.Threading.Tasks;
+using Library;
+
+public class OrderBusinessLogic : IBusinessLogic<Order>
+{
+    public async Task Handle(Order message)
+    {
+        // Apply your business logic here
+        await Task.CompletedTask;
+    }
+}
+public class Order
+{
+    public int OrderId { get; set; }
+    public string ProductName { get; set; }
+    public int Quantity { get; set; }
+}
