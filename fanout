@@ -1,0 +1,243 @@
+using Microsoft.Extensions.DependencyInjection;
+using MassTransit;
+using System;
+
+namespace MassTransitLibrary
+{
+    public static class ServiceExtensions
+    {
+        public static IServiceCollection AddMassTransitConsumer(this IServiceCollection services, Action<IBusRegistrationConfigurator> configureConsumers)
+        {
+            services.AddMassTransit(x =>
+            {
+                configureConsumers(x);
+
+                x.UsingRabbitMq((ctx, cfg) =>
+                {
+                    cfg.Host("rabbitmq://localhost", h =>
+                    {
+                        h.Username("guest");
+                        h.Password("guest");
+                    });
+
+                    cfg.ReceiveEndpoint("order_queue_1", e =>
+                    {
+                        e.ConfigureConsumer<OrderRequestConsumer>(ctx);
+                        e.Bind("order_exchange", s =>
+                        {
+                            s.ExchangeType = "fanout";
+                        });
+                    });
+
+                    cfg.ReceiveEndpoint("order_queue_2", e =>
+                    {
+                        e.ConfigureConsumer<OrderRequestConsumer>(ctx);
+                        e.Bind("order_exchange", s =>
+                        {
+                            s.ExchangeType = "fanout";
+                        });
+                    });
+                });
+            });
+
+            services.AddMassTransitHostedService();
+            return services;
+        }
+
+        public static IServiceCollection AddMassTransitPublisher(this IServiceCollection services)
+        {
+            services.AddMassTransit(x =>
+            {
+                x.UsingRabbitMq((ctx, cfg) =>
+                {
+                    cfg.Host("rabbitmq://localhost", h =>
+                    {
+                        h.Username("guest");
+                        h.Password("guest");
+                    });
+
+                    cfg.Message<OrderRequest>(c =>
+                    {
+                        c.SetEntityName("order_exchange"); // Use the same exchange name for publishing
+                    });
+                });
+            });
+
+            services.AddMassTransitHostedService();
+            services.AddTransient<IMessagePublisher, MessagePublisher>();
+
+            return services;
+        }
+    }
+}
+using MassTransit;
+using System.Threading.Tasks;
+
+namespace MassTransitLibrary
+{
+    public class MessagePublisher : IMessagePublisher
+    {
+        private readonly IBus _bus;
+
+        public MessagePublisher(IBus bus)
+        {
+            _bus = bus;
+        }
+
+        public Task PublishAsync<TMessage>(TMessage message)
+        {
+            return _bus.Publish(message);
+        }
+    }
+}
+using MassTransitLibrary;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+builder.Services.AddMassTransitPublisher();
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+app.Run();
+
+
+using MassTransitLibrary;
+using Microsoft.AspNetCore.Mvc;
+using System.Threading.Tasks;
+
+namespace PublisherAPI.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    public class OrderController : ControllerBase
+    {
+        private readonly IMessagePublisher _messagePublisher;
+
+        public OrderController(IMessagePublisher messagePublisher)
+        {
+            _messagePublisher = messagePublisher;
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Post(OrderRequest orderRequest)
+        {
+            await _messagePublisher.PublishAsync(orderRequest);
+            return Accepted();
+        }
+    }
+}
+
+using MassTransitLibrary;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+builder.Services.AddMassTransitConsumer(cfg =>
+{
+    cfg.AddConsumer<OrderRequestConsumer>();
+});
+
+builder.Services.AddTransient<IOrderProcessor, OrderProcessor>();
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+app.Run();
+using MassTransitLibrary;
+using Microsoft.AspNetCore.Mvc;
+using System.Collections.Concurrent;
+
+namespace ConsumerAPI.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    public class OrderController : ControllerBase
+    {
+        private static readonly ConcurrentDictionary<int, OrderResponse> Orders = new();
+
+        [HttpGet("{id}")]
+        public IActionResult Get(int id)
+        {
+            if (Orders.TryGetValue(id, out var order))
+            {
+                return Ok(order);
+            }
+            return NotFound();
+        }
+
+        public static void AddOrder(int id, OrderResponse order)
+        {
+            Orders[id] = order;
+        }
+    }
+}
+
+using MassTransit;
+using MassTransitLibrary;
+using Microsoft.Extensions.Logging;
+using System.Threading.Tasks;
+
+namespace ConsumerAPI
+{
+    public class OrderRequestConsumer : IConsumer<OrderRequest>
+    {
+        private readonly IOrderProcessor _orderProcessor;
+        private readonly ILogger<OrderRequestConsumer> _logger;
+
+        public OrderRequestConsumer(IOrderProcessor orderProcessor, ILogger<OrderRequestConsumer> logger)
+        {
+            _orderProcessor = orderProcessor;
+            _logger = logger;
+        }
+
+        public async Task Consume(ConsumeContext<OrderRequest> context)
+        {
+            try
+            {
+                var response = await _orderProcessor.ProcessOrderAsync(context.Message);
+                OrderController.AddOrder(context.Message.GetHashCode(), response);
+                await context.RespondAsync(response);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing order");
+                throw;
+            }
+        }
+    }
+}
+
+
+
+
+
