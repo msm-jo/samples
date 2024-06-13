@@ -1,0 +1,105 @@
+using System;
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+
+public static class MassTransitExtensions
+{
+    public static void AddMassTransitWithGenericConsumer<TMessage>(
+        this IServiceCollection services, 
+        Func<ConsumeContext<TMessage>, bool> filterPredicate, 
+        Action<IRabbitMqBusFactoryConfigurator, IRabbitMqHost> configure = null) 
+        where TMessage : class
+    {
+        services.AddMassTransit(cfg =>
+        {
+            cfg.AddConsumer<GenericConsumer<TMessage>>();
+
+            cfg.UsingRabbitMq((context, configurator) =>
+            {
+                configurator.Host(new Uri("rabbitmq://localhost"), h =>
+                {
+                    h.Username("guest");
+                    h.Password("guest");
+                });
+
+                configurator.ReceiveEndpoint("my_queue", e =>
+                {
+                    e.UseFilter(new GenericFilterMiddleware<TMessage>(filterPredicate));
+                    e.ConfigureConsumer<GenericConsumer<TMessage>>(context);
+                });
+
+                configure?.Invoke(configurator, configurator.Host);
+            });
+        });
+
+        services.AddMassTransitHostedService();
+    }
+}
+
+using System;
+using System.Threading.Tasks;
+using MassTransit;
+
+public class GenericConsumer<T> : IConsumer<T> where T : class
+{
+    public async Task Consume(ConsumeContext<T> context)
+    {
+        // Process the message
+        await Console.Out.WriteLineAsync($"Message consumed: {context.Message}");
+    }
+}
+
+public class GenericFilterMiddleware<T> : IFilter<ConsumeContext<T>> where T : class
+{
+    private readonly Func<ConsumeContext<T>, bool> _filterPredicate;
+
+    public GenericFilterMiddleware(Func<ConsumeContext<T>, bool> filterPredicate)
+    {
+        _filterPredicate = filterPredicate;
+    }
+
+    public async Task Send(ConsumeContext<T> context, IPipe<ConsumeContext<T>> next)
+    {
+        if (_filterPredicate(context))
+        {
+            await next.Send(context); // Forward to the next middleware or consumer
+        }
+        else
+        {
+            await context.ConsumeCompleted; // Complete the message without processing
+        }
+    }
+
+    public void Probe(ProbeContext context)
+    {
+        context.CreateFilterScope("genericFilterMiddleware");
+    }
+}
+
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        var host = CreateHostBuilder(args).Build();
+
+        host.Run();
+    }
+
+    public static IHostBuilder CreateHostBuilder(string[] args) =>
+        Host.CreateDefaultBuilder(args)
+            .ConfigureServices((hostContext, services) =>
+            {
+                services.AddMassTransitWithGenericConsumer<MyMessage>(
+                    context => (context.Message as MyMessage)?.ImportantValue == "DesiredValue"
+                );
+            });
+}
+
+public class MyMessage
+{
+    public string ImportantValue { get; set; }
+}
+
