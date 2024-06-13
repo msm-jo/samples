@@ -1,0 +1,83 @@
+using System;
+using System.Threading.Tasks;
+using MassTransit;
+using MassTransit.Pipeline;
+
+public class GenericFilterMiddleware<T> : IFilter<ConsumeContext<T>> where T : class
+{
+    private readonly Func<ConsumeContext<T>, bool> _filterPredicate;
+
+    public GenericFilterMiddleware(Func<ConsumeContext<T>, bool> filterPredicate)
+    {
+        _filterPredicate = filterPredicate;
+    }
+
+    public async Task Send(ConsumeContext<T> context, IPipe<ConsumeContext<T>> next)
+    {
+        if (_filterPredicate(context))
+        {
+            await next.Send(context); // Forward to the next middleware or consumer
+        }
+        else
+        {
+            await context.ConsumeCompleted; // Complete the message without processing
+        }
+    }
+
+    public void Probe(ProbeContext context)
+    {
+        context.CreateFilterScope("genericFilterMiddleware");
+    }
+}
+using System;
+using System.Threading.Tasks;
+using MassTransit;
+
+public class GenericConsumer<T> : IConsumer<T> where T : class
+{
+    public async Task Consume(ConsumeContext<T> context)
+    {
+        // Process the message
+        await Console.Out.WriteLineAsync($"Message consumed: {context.Message}");
+    }
+}
+using System;
+using MassTransit;
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        var busControl = Bus.Factory.CreateUsingRabbitMq(cfg =>
+        {
+            cfg.Host(new Uri("rabbitmq://localhost"), h =>
+            {
+                h.Username("guest");
+                h.Password("guest");
+            });
+
+            cfg.ReceiveEndpoint("my_queue", e =>
+            {
+                // Define the filtering logic here
+                Func<ConsumeContext<MyMessage>, bool> filterPredicate = context =>
+                {
+                    return (context.Message as MyMessage)?.ImportantValue == "DesiredValue";
+                };
+
+                e.UseFilter(new GenericFilterMiddleware<MyMessage>(filterPredicate));
+                e.Consumer<GenericConsumer<MyMessage>>();
+            });
+        });
+
+        busControl.Start();
+        Console.WriteLine("Press any key to exit");
+        Console.ReadKey();
+        busControl.Stop();
+    }
+}
+
+public class MyMessage
+{
+    public string ImportantValue { get; set; }
+}
+
