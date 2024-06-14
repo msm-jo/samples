@@ -1,0 +1,60 @@
+// IEndpointDefinition.cs
+public interface IEndpointDefinition
+{
+    void DefineEndpoints(WebApplication app);
+}
+// WeatherForecastEndpoints.cs
+public class WeatherForecastEndpoints : IEndpointDefinition
+{
+    public void DefineEndpoints(WebApplication app)
+    {
+        app.MapGet("/weatherforecast", GetWeatherForecast);
+    }
+
+    private IEnumerable<WeatherForecast> GetWeatherForecast()
+    {
+        return new[]
+        {
+            new WeatherForecast
+            {
+                Date = DateTime.Now.AddDays(1),
+                TemperatureC = 25,
+                Summary = "Warm"
+            },
+            new WeatherForecast
+            {
+                Date = DateTime.Now.AddDays(2),
+                TemperatureC = 22,
+                Summary = "Cool"
+            }
+        };
+    }
+
+    private class WeatherForecast
+    {
+        public DateTime Date { get; set; }
+        public int TemperatureC { get; set; }
+        public string Summary { get; set; }
+    }
+}
+
+// Program.cs
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+// Scan for all classes implementing IEndpointDefinition
+var endpointDefinitions = typeof(Program).Assembly
+    .ExportedTypes
+    .Where(t => typeof(IEndpointDefinition).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract)
+    .Select(Activator.CreateInstance)
+    .Cast<IEndpointDefinition>()
+    .ToList();
+
+// Register each endpoint definition
+foreach (var endpointDefinition in endpointDefinitions)
+{
+    endpointDefinition.DefineEndpoints(app);
+}
+
+app.Run();
+
