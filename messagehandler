@@ -1,0 +1,79 @@
+// Library Project
+public interface IMessageHandler<TMessage>
+{
+    void HandleMessage(TMessage message);
+}
+// API Project
+using LibraryNamespace;
+
+public class MessageHandler : IMessageHandler<YourMessage>
+{
+    public void HandleMessage(YourMessage message)
+    {
+        // Implement your logic to handle the consumed message
+        Console.WriteLine($"Message consumed in API: {message.Text}");
+    }
+}
+// Library Project
+using MassTransit;
+using System.Threading.Tasks;
+
+public class YourMessageConsumer<TMessage> : IConsumer<TMessage>
+{
+    private readonly IMessageHandler<TMessage> _messageHandler;
+
+    public YourMessageConsumer(IMessageHandler<TMessage> messageHandler)
+    {
+        _messageHandler = messageHandler;
+    }
+
+    public async Task Consume(ConsumeContext<TMessage> context)
+    {
+        var message = context.Message;
+        _messageHandler.HandleMessage(message);
+        await Task.CompletedTask;
+    }
+}
+// API Project
+using LibraryNamespace;
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddSingleton<IMessageHandler<YourMessage>, MessageHandler>();
+
+        services.AddMassTransit(x =>
+        {
+            x.AddConsumer<YourMessageConsumer<YourMessage>>();
+
+            x.UsingRabbitMq((context, cfg) =>
+            {
+                cfg.Host("rabbitmq://localhost");
+
+                cfg.ReceiveEndpoint("queue_name", e =>
+                {
+                    e.ConfigureConsumer<YourMessageConsumer<YourMessage>>(context);
+                });
+            });
+        });
+
+        services.AddMassTransitHostedService();
+
+        // Other service configurations
+        services.AddControllers();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        // Other configurations
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapControllers();
+        });
+    }
+}
+
+
