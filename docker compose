@@ -1,0 +1,23 @@
+# Disable all deprecated features
+feature_flags.rabbitmq_feature_flags.remove_deprecated = false
+
+# Use the official RabbitMQ base image
+FROM rabbitmq:3.11-management
+
+# Copy the configuration file to the RabbitMQ configuration directory
+COPY rabbitmq.conf /etc/rabbitmq/rabbitmq.conf
+
+# Expose RabbitMQ ports
+EXPOSE 5672 15672
+
+# Start RabbitMQ server
+CMD ["rabbitmq-server"]
+
+docker build -t custom-rabbitmq .
+
+docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 custom-rabbitmq
+
+# Example of setting deprecated values to false
+feature_flags.disable_autoheal = false
+feature_flags.disable_queue_master_locator_minimum_version = false
+feature_flags.disable_mirroring = false
