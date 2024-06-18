@@ -1,0 +1,42 @@
+public static IServiceCollection AddMassTransitConsumer<TMessage>(this IServiceCollection services, MessageQueueConfig config)
+    where TMessage : class
+{
+    config.RetryInterval ??= TimeSpan.FromSeconds(5);
+
+    services.AddMassTransit(x =>
+    {
+        x.AddConsumer<Consumer<TMessage>>();
+
+        if (config.Transport == TransportType.RabbitMQ)
+        {
+            x.UsingRabbitMq((ctx, cfg) =>
+            {
+                cfg.Host(config.ConnectionString);
+
+                cfg.ReceiveEndpoint(config.ReceiverQueue, e =>
+                {
+                    e.PrefetchCount = 16; // Adjust as needed
+                    e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval.Value));
+                    e.ConfigureConsumer<Consumer<TMessage>>(ctx);
+                });
+            });
+        }
+        else
+        {
+            x.UsingAzureServiceBus((ctx, cfg) =>
+            {
+                cfg.Host(config.ConnectionString);
+                cfg.ReceiveEndpoint(config.ReceiverQueue, e =>
+                {
+                    // e.PrefetchCount = 16; // Adjust as needed, uncomment if necessary
+                    e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval.Value));
+                    e.ConfigureConsumer<Consumer<TMessage>>(ctx);
+                });
+            });
+        }
+    });
+
+    services.AddSingleton(typeof(IMessageStore<TMessage>), typeof(MessageStore<TMessage>));
+
+    return services;
+}
