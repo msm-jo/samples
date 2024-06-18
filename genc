@@ -1,0 +1,111 @@
+using MassTransit;
+using Microsoft.Extensions.Logging;
+using System.Threading.Tasks;
+
+public class GenericConsumer<TMessage> : IConsumer<TMessage>
+    where TMessage : class
+{
+    private readonly ILogger<GenericConsumer<TMessage>> _logger;
+
+    public GenericConsumer(ILogger<GenericConsumer<TMessage>> logger)
+    {
+        _logger = logger;
+    }
+
+    public async Task Consume(ConsumeContext<TMessage> context)
+    {
+        _logger.LogInformation($"Received message of type {typeof(TMessage).Name}: {context.Message}");
+
+        // Add your message processing logic here
+
+        await Task.CompletedTask;
+    }
+}
+
+using MassTransit;
+using System.Threading.Tasks;
+
+public class GenericPublisher<TMessage>
+    where TMessage : class
+{
+    private readonly IBus _bus;
+
+    public GenericPublisher(IBus bus)
+    {
+        _bus = bus;
+    }
+
+    public async Task Publish(TMessage message)
+    {
+        await _bus.Publish(message);
+    }
+}
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System;
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        CreateHostBuilder(args).Build().Run();
+    }
+
+    public static IHostBuilder CreateHostBuilder(string[] args) =>
+        Host.CreateDefaultBuilder(args)
+            .ConfigureServices((hostContext, services) =>
+            {
+                services.AddMassTransit(x =>
+                {
+                    x.AddConsumer(typeof(GenericConsumer<>));
+                    
+                    x.UsingRabbitMq((context, cfg) =>
+                    {
+                        cfg.Host("rabbitmq://localhost", h =>
+                        {
+                            h.Username("guest");
+                            h.Password("guest");
+                        });
+
+                        cfg.ReceiveEndpoint("generic_queue", e =>
+                        {
+                            e.ConfigureConsumer(context, typeof(GenericConsumer<>));
+                        });
+                    });
+                });
+
+                services.AddMassTransitHostedService();
+
+                services.AddSingleton(typeof(GenericPublisher<>));
+            });
+}
+
+using Microsoft.AspNetCore.Mvc;
+using System.Threading.Tasks;
+
+[ApiController]
+[Route("api/[controller]")]
+public class MessagesController : ControllerBase
+{
+    private readonly GenericPublisher<MyMessage> _publisher;
+
+    public MessagesController(GenericPublisher<MyMessage> publisher)
+    {
+        _publisher = publisher;
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Post([FromBody] MyMessage message)
+    {
+        await _publisher.Publish(message);
+        return Ok();
+    }
+}
+
+public class MyMessage
+{
+    public string Text { get; set; }
+}
+
