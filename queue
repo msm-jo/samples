@@ -1,0 +1,144 @@
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        CreateHostBuilder(args).Build().Run();
+    }
+
+    public static IHostBuilder CreateHostBuilder(string[] args) =>
+        Host.CreateDefaultBuilder(args)
+            .ConfigureServices((hostContext, services) =>
+            {
+                var config = hostContext.Configuration.GetSection("MessagingConfig").Get<MessagingConfig>();
+
+                services.AddMassTransit(x =>
+                {
+                    if (config.Transport == TransportType.RabbitMQ)
+                    {
+                        x.UsingRabbitMq((context, cfg) =>
+                        {
+                            cfg.Host(config.ConnectionString, h =>
+                            {
+                                h.Username(config.UserName);
+                                h.Password(config.Password);
+                            });
+                        });
+                    }
+                    else if (config.Transport == TransportType.AzureServiceBus)
+                    {
+                        x.UsingAzureServiceBus((context, cfg) =>
+                        {
+                            cfg.Host(config.ConnectionString);
+                        });
+                    }
+                });
+
+                services.AddMassTransitHostedService();
+
+                services.AddSingleton(typeof(GenericPublisher<>));
+            });
+}
+
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        CreateHostBuilder(args).Build().Run();
+    }
+
+    public static IHostBuilder CreateHostBuilder(string[] args) =>
+        Host.CreateDefaultBuilder(args)
+            .ConfigureServices((hostContext, services) =>
+            {
+                var config = hostContext.Configuration.GetSection("MessagingConfig").Get<MessagingConfig>();
+
+                services.AddMassTransit(x =>
+                {
+                    x.AddConsumer<GenericConsumer<MyMessage>>();
+
+                    if (config.Transport == TransportType.RabbitMQ)
+                    {
+                        x.UsingRabbitMq((context, cfg) =>
+                        {
+                            cfg.Host(config.ConnectionString, h =>
+                            {
+                                h.Username(config.UserName);
+                                h.Password(config.Password);
+                            });
+
+                            cfg.ReceiveEndpoint(config.ReceiverQueue, e =>
+                            {
+                                e.ConfigureConsumer<GenericConsumer<MyMessage>>(context);
+                            });
+                        });
+                    }
+                    else if (config.Transport == TransportType.AzureServiceBus)
+                    {
+                        x.UsingAzureServiceBus((context, cfg) =>
+                        {
+                            cfg.Host(config.ConnectionString);
+
+                            cfg.SubscriptionEndpoint<MyMessage>(config.ReceiverQueue, e =>
+                            {
+                                e.ConfigureConsumer<GenericConsumer<MyMessage>>(context);
+                            });
+                        });
+                    }
+                });
+
+                services.AddMassTransitHostedService();
+            });
+}
+
+using MassTransit;
+using System.Threading.Tasks;
+
+public class GenericPublisher<TMessage>
+    where TMessage : class
+{
+    private readonly IBus _bus;
+
+    public GenericPublisher(IBus bus)
+    {
+        _bus = bus;
+    }
+
+    public async Task Publish(TMessage message)
+    {
+        await _bus.Publish(message);
+    }
+}
+
+
+using MassTransit;
+using Microsoft.Extensions.Logging;
+using System.Threading.Tasks;
+
+public class GenericConsumer<TMessage> : IConsumer<TMessage>
+    where TMessage : class
+{
+    private readonly ILogger<GenericConsumer<TMessage>> _logger;
+
+    public GenericConsumer(ILogger<GenericConsumer<TMessage>> logger)
+    {
+        _logger = logger;
+    }
+
+    public async Task Consume(ConsumeContext<TMessage> context)
+    {
+        _logger.LogInformation($"Received message of type {typeof(TMessage).Name}: {context.Message}");
+
+        // Add your message processing logic here
+
+        await Task.CompletedTask;
+    }
+}
+
