@@ -1,0 +1,58 @@
+public static class CloneHelper
+{
+    public static T DeepCopy<T>(T obj)
+    {
+        if (obj == null)
+        {
+            return default(T);
+        }
+
+        var serialized = JsonSerializer.Serialize(obj);
+        return JsonSerializer.Deserialize<T>(serialized);
+    }
+}
+
+@page "/edit"
+
+@using Microsoft.AspNetCore.Components.Forms
+@using System.Text.Json
+
+<EditForm EditContext="@editContext">
+    <DataAnnotationsValidator />
+    <ValidationSummary />
+
+    <div>
+        <label>Name:</label>
+        <InputText @bind-Value="editModel.Name" />
+    </div>
+
+    <button type="submit">Save</button>
+    <button type="button" @onclick="CancelEdit">Cancel</button>
+</EditForm>
+
+@code {
+    private EditContext editContext;
+    private MyModel originalModel;
+    private MyModel editModel;
+
+    protected override void OnInitialized()
+    {
+        // Initialize the original model with your data fetching logic
+        originalModel = new MyModel { Id = 1, Name = "Initial Name" };
+
+        // Create a deep copy of the original model for editing
+        editModel = CloneHelper.DeepCopy(originalModel);
+
+        editContext = new EditContext(editModel);
+    }
+
+    private void CancelEdit()
+    {
+        // Revert the changes by copying the original values back to the edit model
+        editModel = CloneHelper.DeepCopy(originalModel);
+
+        // Update the EditContext with the new edit model
+        editContext = new EditContext(editModel);
+        StateHasChanged();
+    }
+}
