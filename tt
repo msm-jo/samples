@@ -1,0 +1,113 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using TradingTechnologies.TTAPI; // Assuming this namespace based on typical SDK usage
+
+public class TraderSession
+{
+    public string TraderId { get; private set; }
+    private string SdkKey;
+    private TTAPIInstance ApiInstance;
+    private Dispatcher Dispatcher;
+
+    public TraderSession(string traderId, string sdkKey)
+    {
+        TraderId = traderId;
+        SdkKey = sdkKey;
+    }
+
+    public void InitializeSession()
+    {
+        Dispatcher = Dispatcher.AttachUIDispatcher();
+        ApiInstance = new TTAPIInstance(Dispatcher);
+        
+        // Assuming a method for initializing API instance with SDK key
+        ApiInstance.Initialize(SdkKey, OnApiReady);
+    }
+
+    private void OnApiReady(TTAPI api)
+    {
+        // Login and session start logic
+        api.LoginCompleted += OnLoginCompleted;
+        api.StartLogin();
+    }
+
+    private void OnLoginCompleted(object sender, LoginStatusEventArgs e)
+    {
+        if (e.Status.IsSuccess)
+        {
+            // Fetch orders and fills after successful login
+            var orders = ApiInstance.GetOrders();
+            var fills = ApiInstance.GetFills();
+            Console.WriteLine($"Trader {TraderId} Orders: {orders}");
+            Console.WriteLine($"Trader {TraderId} Fills: {fills}");
+        }
+        else
+        {
+            Console.WriteLine($"Trader {TraderId} Login failed: {e.Status.StatusMessage}");
+        }
+    }
+
+    // Assuming APIInstance class has appropriate methods to get orders and fills
+    private class TTAPIInstance
+    {
+        private Dispatcher dispatcher;
+
+        public TTAPIInstance(Dispatcher dispatcher)
+        {
+            this.dispatcher = dispatcher;
+        }
+
+        public void Initialize(string sdkKey, Action<TTAPI> onApiReady)
+        {
+            // SDK initialization logic
+        }
+
+        public void StartLogin()
+        {
+            // Login start logic
+        }
+
+        public event EventHandler<LoginStatusEventArgs> LoginCompleted;
+
+        public List<Order> GetOrders()
+        {
+            // Fetch orders logic
+            return new List<Order>();
+        }
+
+        public List<Fill> GetFills()
+        {
+            // Fetch fills logic
+            return new List<Fill>();
+        }
+    }
+}
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        var tradersInfo = new List<(string traderId, string sdkKey)>
+        {
+            ("trader1", "sdk_key_1"),
+            ("trader2", "sdk_key_2"),
+            // Add more traders as needed
+        };
+
+        var tasks = new List<Task>();
+
+        foreach (var (traderId, sdkKey) in tradersInfo)
+        {
+            var traderSession = new TraderSession(traderId, sdkKey);
+            var task = Task.Run(() =>
+            {
+                traderSession.InitializeSession();
+            });
+            tasks.Add(task);
+        }
+
+        Task.WaitAll(tasks.ToArray());
+    }
+}
