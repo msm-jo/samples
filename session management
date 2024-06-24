@@ -1,0 +1,67 @@
+The issue you are facing is that each Kubernetes pod (instance) is sharing the same SDK key and login session. When one pod logs in, it invalidates the session for the others. To handle this, you can consider the following approaches:
+
+1. **Session Management**:
+   - Implement a session manager service that handles login sessions for all pods. This service can manage and distribute session tokens to the pods as needed.
+   - When a pod needs to perform an operation requiring authentication, it requests a session token from the session manager.
+   - This can ensure that only one active session is maintained and shared appropriately among the pods.
+
+2. **Instance-Specific SDK Keys**:
+   - If possible, obtain multiple SDK keys and assign a unique key to each pod. This approach ensures that each instance operates independently.
+   - You can use Kubernetes ConfigMaps or Secrets to manage and distribute these keys to the pods.
+
+3. **Sticky Sessions**:
+   - Use sticky sessions (session affinity) to ensure that once a user logs in to a specific pod, their requests continue to be directed to that same pod.
+   - Configure the Kubernetes Service to use session affinity by setting the `service.spec.sessionAffinity` field to `ClientIP`.
+
+4. **StatefulSet Deployment**:
+   - If the application requires maintaining state across instances, consider using a StatefulSet instead of a Deployment. StatefulSets maintain a unique identity for each pod, which can help manage sessions more effectively.
+   - This approach works well if your application can handle stateful behavior and you have a mechanism to synchronize state among instances.
+
+5. **Distributed Caching**:
+   - Use a distributed cache (e.g., Redis, Memcached) to store session tokens. This allows all instances to access and share the same session data.
+   - Configure your application to check the cache for an existing session token before initiating a new login.
+
+### Example Configuration for Sticky Sessions in Kubernetes:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+spec:
+  selector:
+    app: my-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  sessionAffinity: ClientIP
+```
+
+### Example Configuration for StatefulSet:
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: my-stateful-app
+spec:
+  serviceName: "my-service"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-stateful-app
+  template:
+    metadata:
+      labels:
+        app: my-stateful-app
+    spec:
+      containers:
+      - name: my-container
+        image: my-image
+        ports:
+        - containerPort: 8080
+```
+
+Implementing one or a combination of these strategies should help resolve the issue of sessions being invalidated when multiple instances are running.
+
