@@ -1,0 +1,164 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Caching.Memory;
+using TradingTechnologies.TTAPI; // Adjust based on actual SDK namespace
+
+public class TraderSession
+{
+    public string TraderRef { get; private set; } = string.Empty;
+    public readonly ILogger<SdkWrapper> _logger;
+    public readonly TradeSubscriptionManager _tradeSubscriptionManager;
+    public readonly IReadOnlyDictionary<string, string> _sdkSecrets;
+    public readonly ServiceEnvironment _env;
+    public readonly SemaphoreSlim _subscriptionSemaphore;
+    public readonly TimeSpan _semaphoreTimeout;
+    public readonly TimeSpan _cacheLifetime;
+    public readonly TimeSpan _subscriptionTimeout;
+    public readonly IMemoryCache _memoryCache;
+    public readonly object _secretLock = new();
+    public string _sdkSecretName = "";
+    public WorkerDispatcher? _dispatcher;
+    public TTAPI? _api;
+    public volatile bool _initialised;
+
+    public TraderSession(string traderRef, string sdkKey, ILogger<SdkWrapper> logger, TradeSubscriptionManager tradeSubscriptionManager,
+                         IReadOnlyDictionary<string, string> sdkSecrets, ServiceEnvironment env, SemaphoreSlim subscriptionSemaphore,
+                         TimeSpan semaphoreTimeout, TimeSpan cacheLifetime, TimeSpan subscriptionTimeout, IMemoryCache memoryCache)
+    {
+        TraderRef = traderRef;
+        _sdkSecretName = sdkKey;
+        _logger = logger;
+        _tradeSubscriptionManager = tradeSubscriptionManager;
+        _sdkSecrets = sdkSecrets;
+        _env = env;
+        _subscriptionSemaphore = subscriptionSemaphore;
+        _semaphoreTimeout = semaphoreTimeout;
+        _cacheLifetime = cacheLifetime;
+        _subscriptionTimeout = subscriptionTimeout;
+        _memoryCache = memoryCache;
+    }
+
+    public void InitializeSession()
+    {
+        _dispatcher = Dispatcher.AttachWorkerDispatcher();
+        _dispatcher.DispatchAction(() => Init(new TTAPIOptions(_env, _sdkSecretName, 5000))); // Adjust as necessary for your TTAPIOptions
+        _dispatcher.Run();
+    }
+
+    private void Init(TTAPIOptions options)
+    {
+        TTAPI.CreateTTAPI(_dispatcher, options, (api, ex) =>
+        {
+            if (ex == null)
+            {
+                LogInitialisingApi();
+                _api = api;
+                _api.TTAPIStatusUpdate += OnStatusUpdate;
+                _api.Start();
+            }
+            else if (ex.IsRecoverable)
+            {
+                // Allow it to auto-retry
+            }
+            else
+            {
+                LogInitialisationFailed(ex);
+                throw ex;
+            }
+        });
+    }
+
+    private void OnStatusUpdate(object sender, TTAPIStatusUpdateEventArgs e)
+    {
+        if (e.IsReady && _dispatcher != null)
+        {
+            LogApiInitialised();
+            _tradeSubscriptionManager.Start(_dispatcher);
+            _initialised = true;
+        }
+        else
+        {
+            LogApiStatusUpdate(e.StatusMessage);
+            if (!e.IsDown)
+                return;
+
+            _tradeSubscriptionManager.Stop();
+            _initialised = false;
+        }
+    }
+
+    public async Task<ISdkResponse<PriceSubscriptionFields>> GetPriceInformation(string market, string product, string contract, InstrumentType instrumentType, PriceSubscriptionType priceSubscriptionType, bool shouldCache)
+    {
+        var instrumentResponse = await LookupInstrument(market, product, contract, instrumentType);
+
+        if (instrumentResponse is not SuccessResponse<Instrument> wrapper)
+        {
+            return new FailedResponse<PriceSubscriptionFields>("Unexpected response");
+        }
+
+        if (_memoryCache.TryGetValue(Key(wrapper.Data.Name), out PriceSubscription sub) && shouldCache)
+        {
+            LogSubscriptionGotFromCache(Key(wrapper.Data.Name));
+            return new SuccessResponse<PriceSubscriptionFields>(sub.Fields);
+        }
+
+        if (!await _subscriptionSemaphore.WaitAsync(_semaphoreTimeout))
+        {
+            LogSemaphoreAcquisitionFailed(instrumentType, contract);
+            return new ThrottledResponse<PriceSubscriptionFields>();
+        }
+
+        try
+        {
+            // Logic to get price information
+        }
+        finally
+        {
+            _subscriptionSemaphore.Release();
+        }
+    }
+
+    private void LogInitialisingApi() => _logger.LogInformation("Initializing API...");
+    private void LogApiInitialised() => _logger.LogInformation("API Initialized.");
+    private void LogApiStatusUpdate(string statusMessage) => _logger.LogInformation($"API Status Update: {statusMessage}");
+    private void LogInitialisationFailed(ApiCreationException ex) => _logger.LogError($"Initialization Failed: {ex.Message}");
+    private void LogSubscriptionGotFromCache(string key) => _logger.LogInformation($"Subscription got from cache for key: {key}");
+    private void LogSemaphoreAcquisitionFailed(InstrumentType instrumentType, string contract) => _logger.LogError($"Semaphore acquisition failed for {instrumentType} {contract}");
+}
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        var sdkSecrets = new Dictionary<string, string>
+        {
+            { "trader1", "sdk_key_1" },
+            { "trader2", "sdk_key_2" },
+            // Add more traders as needed
+        };
+
+        ILogger<SdkWrapper> logger = new Logger<SdkWrapper>(new LoggerFactory());
+        var tradeSubscriptionManager = new TradeSubscriptionManager();
+        var env = new ServiceEnvironment(); // Adjust to actual initialization
+        var subscriptionSemaphore = new SemaphoreSlim(1, 1);
+        var semaphoreTimeout = TimeSpan.FromSeconds(30);
+        var cacheLifetime = TimeSpan.FromMinutes(10);
+        var subscriptionTimeout = TimeSpan.FromSeconds(10);
+        var memoryCache = new MemoryCache(new MemoryCacheOptions());
+
+        foreach (var trader in sdkSecrets)
+        {
+            var traderSession = new TraderSession(trader.Key, trader.Value, logger, tradeSubscriptionManager, sdkSecrets, env,
+                                                  subscriptionSemaphore, semaphoreTimeout, cacheLifetime, subscriptionTimeout, memoryCache);
+            var thread = new Thread(traderSession.InitializeSession)
+            {
+                Name = $"TT SDK Thread for {trader.Key}",
+                IsBackground = true
+            };
+            thread.Start();
+        }
+    }
+}
