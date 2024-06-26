@@ -1,0 +1,165 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Caching.Memory;
+using TradingTechnologies.TTAPI;
+
+public class SdkWrapper
+{
+    private readonly ILogger<SdkWrapper> _logger;
+    private readonly TradeSubscriptionManager _subscriptionManager;
+    private readonly IMemoryCache _memoryCache;
+    private readonly SdkWrapperOptions _options;
+    private readonly Dictionary<string, string> _sdkSecrets;
+    private readonly SemaphoreSlim _subscriptionSemaphore;
+    private readonly TimeSpan _semaphoreTimeout;
+    private readonly TimeSpan _cacheLifetime;
+    private readonly TimeSpan _subscriptionTimeout;
+    private readonly Dictionary<string, TTAPI> _apiInstances;
+    private readonly Dictionary<string, Dispatcher> _dispatchers;
+
+    public SdkWrapper(ILogger<SdkWrapper> logger, TradeSubscriptionManager subscriptionManager, IMemoryCache memoryCache, IOptions<SdkWrapperOptions> options)
+    {
+        _logger = logger;
+        _subscriptionManager = subscriptionManager;
+        _memoryCache = memoryCache;
+        _options = options.Value;
+        _sdkSecrets = _options.Secrets;
+        _subscriptionSemaphore = new SemaphoreSlim(_options.SubscriptionLimit);
+        _semaphoreTimeout = TimeSpan.FromMilliseconds(_options.SubscriptionTimeoutMs);
+        _cacheLifetime = TimeSpan.FromMilliseconds(_options.CacheSlidingLifetimeMs);
+        _subscriptionTimeout = TimeSpan.FromMilliseconds(_options.SubscriptionTimeoutMs);
+        _apiInstances = new Dictionary<string, TTAPI>();
+        _dispatchers = new Dictionary<string, Dispatcher>();
+    }
+
+    public void InitializeSessions()
+    {
+        foreach (var sdkSecret in _sdkSecrets)
+        {
+            var thread = new Thread(() => InitializeSession(sdkSecret.Key, sdkSecret.Value))
+            {
+                Name = $"TT SDK Thread for {sdkSecret.Key}",
+                IsBackground = true
+            };
+            thread.Start();
+        }
+    }
+
+    private void InitializeSession(string traderRef, string sdkKey)
+    {
+        var dispatcher = Dispatcher.AttachWorkerDispatcher();
+        _dispatchers[traderRef] = dispatcher;
+
+        dispatcher.DispatchAction(() => Init(new TTAPIOptions(), traderRef, sdkKey));
+        dispatcher.Run();
+    }
+
+    private void Init(TTAPIOptions options, string traderRef, string sdkKey)
+    {
+        TTAPI.CreateTTAPI(_dispatchers[traderRef], options, (api, ex) =>
+        {
+            if (ex == null)
+            {
+                _logger.LogInformation("Initializing API for {TraderRef}", traderRef);
+                _apiInstances[traderRef] = api;
+                api.TTAPIStatusUpdate += (sender, e) => OnStatusUpdate(sender, e, traderRef);
+                api.Start();
+            }
+            else if (ex.IsRecoverable)
+            {
+                // Allow it to auto-retry
+            }
+            else
+            {
+                _logger.LogError("Initialization Failed for {TraderRef}: {Message}", traderRef, ex.Message);
+                throw ex;
+            }
+        });
+    }
+
+    private void OnStatusUpdate(object sender, TTAPIStatusUpdateEventArgs e, string traderRef)
+    {
+        if (e.IsReady && _dispatchers[traderRef] != null)
+        {
+            _logger.LogInformation("API Initialized for {TraderRef}", traderRef);
+            _subscriptionManager.Start(_dispatchers[traderRef]);
+        }
+        else
+        {
+            _logger.LogInformation("API Status Update for {TraderRef}: {StatusMessage}", traderRef, e.StatusMessage);
+            if (!e.IsDown)
+                return;
+
+            _subscriptionManager.Stop(); // Implement Stop method as needed
+        }
+    }
+
+    public TTAPI GetApiInstance(string traderRef)
+    {
+        if (_apiInstances.TryGetValue(traderRef, out var api))
+        {
+            return api;
+        }
+
+        throw new InvalidOperationException($"No API instance found for trader ref {traderRef}");
+    }
+}
+
+
+using System;
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
+
+public interface ISdkWrapperManager
+{
+    SdkWrapper GetSdkWrapper(string sdkKey);
+    void InitializeSdkWrappers(Dictionary<string, string> sdkSecrets);
+}
+
+public class SdkWrapperManager : ISdkWrapperManager
+{
+    private readonly ILogger<SdkWrapperManager> _logger;
+    private readonly IServiceProvider _serviceProvider;
+    private readonly ConcurrentDictionary<string, SdkWrapper> _sdkWrappers = new();
+
+    public SdkWrapperManager(ILogger<SdkWrapperManager> logger, IServiceProvider serviceProvider)
+    {
+        _logger = logger;
+        _serviceProvider = serviceProvider;
+    }
+
+    public SdkWrapper GetSdkWrapper(string sdkKey)
+    {
+        if (_sdkWrappers.TryGetValue(sdkKey, out var wrapper))
+        {
+            return wrapper;
+        }
+
+        throw new InvalidOperationException($"No SDK wrapper found for SDK key {sdkKey}");
+    }
+
+    public void InitializeSdkWrappers(Dictionary<string, string> sdkSecrets)
+    {
+        foreach (var trader in sdkSecrets)
+        {
+            var logger = _serviceProvider.GetRequiredService<ILogger<SdkWrapper>>();
+            var sdkWrapper = new SdkWrapper(trader.Value, logger, _serviceProvider.GetRequiredService<TradeSubscriptionManager>(), _serviceProvider.GetRequiredService<IMemoryCache>(), _serviceProvider.GetRequiredService<IOptions<SdkWrapperOptions>>());
+            var thread = new Thread(sdkWrapper.InitializeSessions)
+            {
+                Name = $"TT SDK Thread for {trader.Key}",
+                IsBackground = true
+            };
+
+            if (_sdkWrappers.TryAdd(trader.Value, sdkWrapper))
+            {
+                thread.Start();
+            }
+            else
+            {
+                _logger.LogError($"Failed to add SDK wrapper for {trader.Key}");
+            }
+        }
+    }
+}
