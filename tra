@@ -1,0 +1,272 @@
+To refactor your code to handle multiple threads and sessions using `SdkWrapper`, we can follow the steps mentioned earlier but tailor them to the structure you have. Here’s how you can refactor your current code:
+
+### Step 1: Update `SdkWrapper` to Handle Multiple Sessions
+
+First, ensure that `SdkWrapper` can initialize sessions with different SDK keys.
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Caching.Memory;
+using TradingTechnologies.TTAPI;
+
+public class SdkWrapper
+{
+    private readonly ILogger<SdkWrapper> _logger;
+    private readonly TradeSubscriptionManager _subscriptionManager;
+    private readonly IMemoryCache _memoryCache;
+    private readonly SdkWrapperOptions _options;
+    private readonly Dictionary<string, string> _sdkSecrets;
+    private readonly SemaphoreSlim _subscriptionSemaphore;
+    private readonly TimeSpan _semaphoreTimeout;
+    private readonly TimeSpan _cacheLifetime;
+    private readonly TimeSpan _subscriptionTimeout;
+    private readonly Dictionary<string, TTAPI> _apiInstances;
+    private readonly Dictionary<string, Dispatcher> _dispatchers;
+
+    public SdkWrapper(ILogger<SdkWrapper> logger, TradeSubscriptionManager subscriptionManager, IMemoryCache memoryCache, IOptions<SdkWrapperOptions> options)
+    {
+        _logger = logger;
+        _subscriptionManager = subscriptionManager;
+        _memoryCache = memoryCache;
+        _options = options.Value;
+        _sdkSecrets = _options.Secrets;
+        _subscriptionSemaphore = new SemaphoreSlim(_options.SubscriptionLimit);
+        _semaphoreTimeout = TimeSpan.FromMilliseconds(_options.SubscriptionTimeoutMs);
+        _cacheLifetime = TimeSpan.FromMilliseconds(_options.CacheSlidingLifetimeMs);
+        _subscriptionTimeout = TimeSpan.FromMilliseconds(_options.SubscriptionTimeoutMs);
+        _apiInstances = new Dictionary<string, TTAPI>();
+        _dispatchers = new Dictionary<string, Dispatcher>();
+    }
+
+    public void InitializeSessions()
+    {
+        foreach (var sdkSecret in _sdkSecrets)
+        {
+            var thread = new Thread(() => InitializeSession(sdkSecret.Key, sdkSecret.Value))
+            {
+                Name = $"TT SDK Thread for {sdkSecret.Key}",
+                IsBackground = true
+            };
+            thread.Start();
+        }
+    }
+
+    private void InitializeSession(string traderRef, string sdkKey)
+    {
+        var dispatcher = Dispatcher.AttachWorkerDispatcher();
+        _dispatchers[traderRef] = dispatcher;
+
+        dispatcher.DispatchAction(() => Init(new TTAPIOptions(), traderRef, sdkKey));
+        dispatcher.Run();
+    }
+
+    private void Init(TTAPIOptions options, string traderRef, string sdkKey)
+    {
+        TTAPI.CreateTTAPI(_dispatchers[traderRef], options, (api, ex) =>
+        {
+            if (ex == null)
+            {
+                _logger.LogInformation("Initializing API for {TraderRef}", traderRef);
+                _apiInstances[traderRef] = api;
+                api.TTAPIStatusUpdate += (sender, e) => OnStatusUpdate(sender, e, traderRef);
+                api.Start();
+            }
+            else if (ex.IsRecoverable)
+            {
+                // Allow it to auto-retry
+            }
+            else
+            {
+                _logger.LogError("Initialization Failed for {TraderRef}: {Message}", traderRef, ex.Message);
+                throw ex;
+            }
+        });
+    }
+
+    private void OnStatusUpdate(object sender, TTAPIStatusUpdateEventArgs e, string traderRef)
+    {
+        if (e.IsReady && _dispatchers[traderRef] != null)
+        {
+            _logger.LogInformation("API Initialized for {TraderRef}", traderRef);
+            _subscriptionManager.Start(_dispatchers[traderRef]);
+        }
+        else
+        {
+            _logger.LogInformation("API Status Update for {TraderRef}: {StatusMessage}", traderRef, e.StatusMessage);
+            if (!e.IsDown)
+                return;
+
+            _subscriptionManager.Stop(); // Implement Stop method as needed
+        }
+    }
+
+    public TTAPI GetApiInstance(string traderRef)
+    {
+        if (_apiInstances.TryGetValue(traderRef, out var api))
+        {
+            return api;
+        }
+
+        throw new InvalidOperationException($"No API instance found for trader ref {traderRef}");
+    }
+}
+```
+
+### Step 2: Create `SdkWrapperManager` to Manage Multiple Instances
+
+Create a service to manage the lifecycle of `SdkWrapper` instances.
+
+```csharp
+using System;
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
+
+public interface ISdkWrapperManager
+{
+    SdkWrapper GetSdkWrapper(string sdkKey);
+    void InitializeSdkWrappers(Dictionary<string, string> sdkSecrets);
+}
+
+public class SdkWrapperManager : ISdkWrapperManager
+{
+    private readonly ILogger<SdkWrapperManager> _logger;
+    private readonly IServiceProvider _serviceProvider;
+    private readonly ConcurrentDictionary<string, SdkWrapper> _sdkWrappers = new();
+
+    public SdkWrapperManager(ILogger<SdkWrapperManager> logger, IServiceProvider serviceProvider)
+    {
+        _logger = logger;
+        _serviceProvider = serviceProvider;
+    }
+
+    public SdkWrapper GetSdkWrapper(string sdkKey)
+    {
+        if (_sdkWrappers.TryGetValue(sdkKey, out var wrapper))
+        {
+            return wrapper;
+        }
+
+        throw new InvalidOperationException($"No SDK wrapper found for SDK key {sdkKey}");
+    }
+
+    public void InitializeSdkWrappers(Dictionary<string, string> sdkSecrets)
+    {
+        foreach (var trader in sdkSecrets)
+        {
+            var logger = _serviceProvider.GetRequiredService<ILogger<SdkWrapper>>();
+            var sdkWrapper = new SdkWrapper(trader.Value, logger, _serviceProvider.GetRequiredService<TradeSubscriptionManager>(), _serviceProvider.GetRequiredService<IMemoryCache>(), _serviceProvider.GetRequiredService<IOptions<SdkWrapperOptions>>());
+            var thread = new Thread(sdkWrapper.InitializeSessions)
+            {
+                Name = $"TT SDK Thread for {trader.Key}",
+                IsBackground = true
+            };
+
+            if (_sdkWrappers.TryAdd(trader.Value, sdkWrapper))
+            {
+                thread.Start();
+            }
+            else
+            {
+                _logger.LogError($"Failed to add SDK wrapper for {trader.Key}");
+            }
+        }
+    }
+}
+```
+
+### Step 3: Initialize `SdkWrapper` Instances During Application Startup
+
+Configure the `SdkWrapperManager` and initialize the SDK wrappers during application startup.
+
+```csharp
+public class Startup
+{
+    public IConfiguration Configuration { get; }
+
+    public Startup(IConfiguration configuration)
+    {
+        Configuration = configuration;
+    }
+
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddControllers();
+        services.AddMemoryCache();
+        services.Configure<SdkWrapperOptions>(Configuration.GetSection("SdkWrapperOptions"));
+        services.AddSingleton<ISdkWrapperManager, SdkWrapperManager>();
+        services.AddSingleton<TradeSubscriptionManager>();
+        services.AddSingleton<ILogger<SdkWrapperManager>>(sp => sp.GetRequiredService<ILoggerFactory>().CreateLogger<SdkWrapperManager>());
+
+        // Add other necessary services
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env, ISdkWrapperManager sdkWrapperManager)
+    {
+        if (env.IsDevelopment())
+        {
+            app.UseDeveloperExceptionPage();
+        }
+
+        app.UseRouting();
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapControllers();
+        });
+
+        // Initialize SDK wrappers with secrets
+        var sdkSecrets = Configuration.GetSection("SdkWrapperOptions:Secrets").Get<Dictionary<string, string>>();
+        sdkWrapperManager.InitializeSdkWrappers(sdkSecrets);
+    }
+}
+```
+
+### Step 4: Expose API Endpoints
+
+Create API controllers that interact with specific `SdkWrapper` instances.
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+public class TraderController : ControllerBase
+{
+    private readonly ISdkWrapperManager _sdkWrapperManager;
+
+    public TraderController(ISdkWrapperManager sdkWrapperManager)
+    {
+        _sdkWrapperManager = sdkWrapperManager;
+    }
+
+    [HttpGet("price-information")]
+    public async Task<IActionResult> GetPriceInformation(string sdkKey, string market, string product, string contract, InstrumentType instrumentType, PriceSubscriptionType priceSubscriptionType, bool shouldCache)
+    {
+        try
+        {
+            var sdkWrapper = _sdkWrapperManager.GetSdkWrapper(sdkKey);
+            var apiInstance = sdkWrapper.GetApiInstance(sdkKey);
+            // Call the method from SdkWrapper to get price information
+            var response = await sdkWrapper.GetPriceInformation(market, product, contract, instrumentType, priceSubscriptionType, shouldCache);
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    // Add other endpoints as necessary
+}
+```
+
+### Summary
+
+1. **SdkWrapper Class:** Handles multiple sessions by initializing separate TTAPI instances for each SDK key.
+2. **SdkWrapperManager Service:** Manages the lifecycle of multiple `SdkWrapper` instances.
+3. **Startup Configuration:** Initializes `SdkWrapper` instances during application startup.
+4. **API Endpoints:** Allows interacting with specific `SdkWrapper` instances through API endpoints.
+
+This setup ensures that each trader's operations are managed by their respective `SdkWrapper` instance and can be accessed via API calls.
