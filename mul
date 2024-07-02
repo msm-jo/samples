@@ -1,0 +1,144 @@
+To set up a single queue for multiple consumers, you need to ensure that your configuration correctly assigns multiple consumer types to the same queue. This involves configuring the endpoint to handle multiple consumers.
+
+Here is a step-by-step guide on how to achieve this:
+
+### Step 1: Define the Configuration Class
+
+Make sure you have a configuration class to hold your RabbitMQ settings.
+
+```csharp
+public class MessagingConfig
+{
+    public string Host { get; set; }
+    public string ConnectionString { get; set; }
+    public string UserName { get; set; }
+    public string Password { get; set; }
+    public int RetryCount { get; set; }
+    public TimeSpan RetryInterval { get; set; }
+}
+```
+
+### Step 2: Define Consumers
+
+Define your consumer classes that implement the `IConsumer` interface.
+
+```csharp
+public class ConsumerA : IConsumer<MessageA>
+{
+    public async Task Consume(ConsumeContext<MessageA> context)
+    {
+        // Handle message of type MessageA
+    }
+}
+
+public class ConsumerB : IConsumer<MessageB>
+{
+    public async Task Consume(ConsumeContext<MessageB> context)
+    {
+        // Handle message of type MessageB
+    }
+}
+```
+
+### Step 3: Configure MassTransit
+
+Configure MassTransit to use a single queue for multiple consumers. Modify your `ConfigureBus` method to include multiple consumers on the same endpoint.
+
+```csharp
+public static void ConfigureBus(IBusRegistrationConfigurator configurator, MessagingConfig config)
+{
+    switch (config.Transport)
+    {
+        case TransportType.RabbitMQ:
+            configurator.UsingRabbitMq((context, cfg) =>
+            {
+                cfg.Host(config.ConnectionString, h =>
+                {
+                    h.Username(config.UserName);
+                    h.Password(config.Password);
+                });
+
+                cfg.ReceiveEndpoint("shared-queue", e =>
+                {
+                    e.ConfigureConsumer<ConsumerA>(context);
+                    e.ConfigureConsumer<ConsumerB>(context);
+
+                    e.PrefetchCount = 16;
+                    e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval));
+                });
+            });
+            break;
+
+        case TransportType.AzureServiceBus:
+            configurator.UsingAzureServiceBus((context, cfg) =>
+            {
+                cfg.Host(config.ConnectionString);
+
+                cfg.ReceiveEndpoint("shared-queue", e =>
+                {
+                    e.ConfigureConsumer<ConsumerA>(context);
+                    e.ConfigureConsumer<ConsumerB>(context);
+
+                    e.PrefetchCount = 16;
+                    e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval));
+                });
+            });
+            break;
+    }
+}
+```
+
+### Step 4: Register Consumers and Configuration
+
+Ensure your consumers and configuration are properly registered in the DI container.
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Load configuration from appsettings.json
+builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
+var messagingConfig = builder.Configuration.GetSection("MessagingConfig").Get<MessagingConfig>();
+
+// Register the configuration in the DI container
+builder.Services.AddSingleton(messagingConfig);
+
+// Register MassTransit and configure RabbitMQ
+builder.Services.AddMassTransit(x =>
+{
+    x.AddConsumer<ConsumerA>();
+    x.AddConsumer<ConsumerB>();
+
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.Host(messagingConfig.ConnectionString, h =>
+        {
+            h.Username(messagingConfig.UserName);
+            h.Password(messagingConfig.Password);
+        });
+
+        cfg.ReceiveEndpoint("shared-queue", e =>
+        {
+            e.ConfigureConsumer<ConsumerA>(context);
+            e.ConfigureConsumer<ConsumerB>(context);
+
+            e.PrefetchCount = 16;
+            e.UseMessageRetry(r => r.Interval(messagingConfig.RetryCount, messagingConfig.RetryInterval));
+        });
+    });
+});
+
+builder.Services.AddMassTransitHostedService();
+
+var app = builder.Build();
+
+app.Run();
+```
+
+### Explanation
+
+1. **Configuration Class**: Holds RabbitMQ settings, including connection details and retry policy.
+2. **Consumers**: Define your consumer classes implementing `IConsumer`.
+3. **MassTransit Configuration**: Configure MassTransit to use RabbitMQ. Set up a single queue (`shared-queue`) and configure it to handle multiple consumers (`ConsumerA` and `ConsumerB`).
+4. **DI Registration**: Ensure that your consumers and the configuration are properly registered in the dependency injection container.
+
+By following these steps, you set up a single queue that can handle multiple consumers, ensuring they can consume messages from the same queue.
