@@ -1,0 +1,184 @@
+The error you are encountering indicates that the `IBusRegistrationConfigurator` does not contain a definition for `ConfigureJsonSerializerOptions`. Instead, `ConfigureJsonSerializerOptions` is a method available on `IRabbitMqBusFactoryConfigurator`.
+
+To resolve this, you should pass the correct configurator type to the method responsible for setting JSON serialization options. Here’s how you can refactor your code:
+
+### Step 1: Create a Helper Method for JSON Serializer Options
+
+Create a static method to configure JSON serializer options that can be reused across your different configuration methods. Ensure you use the correct configurator type.
+
+```csharp
+public static class CommonBusConfigurator
+{
+    public static void ConfigureJsonSerializerOptions(IRabbitMqBusFactoryConfigurator busConfig)
+    {
+        busConfig.ConfigureJsonSerializerOptions(o =>
+        {
+            o.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals | JsonNumberHandling.AllowReadingFromString;
+            return o;
+        });
+    }
+
+    public static void ConfigureBus<TMessage, TConsumer>(IBusRegistrationConfigurator configurator, MessagingConfig config)
+        where TMessage : class
+        where TConsumer : class, IConsumer<TMessage>
+    {
+        switch (config.Transport)
+        {
+            case TransportType.RabbitMQ:
+                configurator.UsingRabbitMq((context, cfg) =>
+                {
+                    ConfigureJsonSerializerOptions(cfg);
+
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    cfg.ReceiveEndpoint(config.ReceiverQueue, e =>
+                    {
+                        e.ConfigureConsumer<TConsumer>(context);
+                    });
+                });
+                break;
+            
+            // Add other transport types if needed
+        }
+    }
+
+    public static void ConfigureBus<TRequest, TResponse, TConsumer>(IBusRegistrationConfigurator configurator, MessagingConfig config, string queueName)
+        where TRequest : class
+        where TResponse : class
+        where TConsumer : class, IConsumer<RequestMessage<TRequest>>
+    {
+        switch (config.Transport)
+        {
+            case TransportType.RabbitMQ:
+                configurator.UsingRabbitMq((context, cfg) =>
+                {
+                    ConfigureJsonSerializerOptions(cfg);
+
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    cfg.ReceiveEndpoint(queueName, e =>
+                    {
+                        e.ConfigureConsumer<TConsumer>(context);
+                    });
+                });
+                break;
+            
+            // Add other transport types if needed
+        }
+    }
+
+    public static void ConfigureBus<TConsumer>(IBusRegistrationConfigurator configurator, MessagingConfig config, List<(string QueueName, Type RequestType, Type ResponseType)> consumerConfig)
+        where TConsumer : class
+    {
+        switch (config.Transport)
+        {
+            case TransportType.RabbitMQ:
+                configurator.UsingRabbitMq((context, cfg) =>
+                {
+                    ConfigureJsonSerializerOptions(cfg);
+
+                    cfg.Host(config.ConnectionString, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    foreach (var (queueName, requestType, responseType) in consumerConfig)
+                    {
+                        var consumerType = typeof(TConsumer);
+                        var method = typeof(IRabbitMqBusFactoryConfigurator).GetMethod(nameof(IRabbitMqBusFactoryConfigurator.ConfigureConsumer)).MakeGenericMethod(consumerType);
+                        method.Invoke(cfg, new object[] { context, null });
+                    }
+                });
+                break;
+            
+            // Add other transport types if needed
+        }
+    }
+}
+```
+
+### Step 2: Use the Helper Method in Your Configuration Methods
+
+Refactor your existing configuration methods to use the `ConfigureJsonSerializerOptions` helper method correctly.
+
+### Example 1: ConfigureBus with Single Consumer
+
+```csharp
+public static void ConfigureBus<TMessage, TConsumer>(IBusRegistrationConfigurator configurator, MessagingConfig config)
+    where TMessage : class
+    where TConsumer : class, IConsumer<TMessage>
+{
+    switch (config.Transport)
+    {
+        case TransportType.RabbitMQ:
+            configurator.UsingRabbitMq((context, cfg) =>
+            {
+                ConfigureJsonSerializerOptions(cfg);
+
+                cfg.Host(config.ConnectionString, h =>
+                {
+                    h.Username(config.UserName);
+                    h.Password(config.Password);
+                });
+
+                cfg.ReceiveEndpoint(config.ReceiverQueue, e =>
+                {
+                    e.ConfigureConsumer<TConsumer>(context);
+                });
+            });
+            break;
+
+        // Add other transport types if needed
+    }
+}
+```
+
+### Example 2: ConfigureBus with Multiple Consumers
+
+```csharp
+public static void ConfigureBus<TConsumer>(IBusRegistrationConfigurator configurator, MessagingConfig config, List<(string QueueName, Type RequestType, Type ResponseType)> consumerConfig)
+    where TConsumer : class
+{
+    switch (config.Transport)
+    {
+        case TransportType.RabbitMQ:
+            configurator.UsingRabbitMq((context, cfg) =>
+            {
+                ConfigureJsonSerializerOptions(cfg);
+
+                cfg.Host(config.ConnectionString, h =>
+                {
+                    h.Username(config.UserName);
+                    h.Password(config.Password);
+                });
+
+                foreach (var (queueName, requestType, responseType) in consumerConfig)
+                {
+                    var consumerType = typeof(TConsumer);
+                    var method = typeof(IRabbitMqBusFactoryConfigurator).GetMethod(nameof(IRabbitMqBusFactoryConfigurator.ConfigureConsumer)).MakeGenericMethod(consumerType);
+                    method.Invoke(cfg, new object[] { context, null });
+                }
+            });
+            break;
+
+        // Add other transport types if needed
+    }
+}
+```
+
+### Summary
+
+1. **Create a Helper Method**: Define a static method to configure JSON serializer options, using the correct configurator type.
+2. **Refactor Configuration Methods**: Use the helper method in your various bus configuration methods, ensuring the correct configurator type is passed.
+3. **Ensure Consistency**: Apply the JSON serializer options consistently across different parts of your application.
+
+This setup will help you maintain a consistent configuration across different parts of your application, ensuring all configurations use the same JSON serializer options.
