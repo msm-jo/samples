@@ -1,0 +1,131 @@
+To enable service registration for a library project in a .NET application, you typically use dependency injection (DI). In a .NET application, services are registered in the `Startup.cs` or `Program.cs` file of the main application. However, in a library project, you need to expose a method for service registration that can be called by the main application.
+
+Here’s how you can do this:
+
+1. **Create a Service Registration Method in the Library**: Define a static method in your library project that registers the services.
+
+   ```csharp
+   using Microsoft.Extensions.DependencyInjection;
+
+   namespace MyLibrary
+   {
+       public static class ServiceCollectionExtensions
+       {
+           public static void AddMyLibraryServices(this IServiceCollection services)
+           {
+               // Register your services here
+               services.AddTransient<IMyService, MyService>();
+               // Add other services as needed
+           }
+       }
+   }
+   ```
+
+2. **Register the Services in the Main Application**: Call this method from the `Startup.cs` or `Program.cs` file of the main application to register the library services.
+
+### Example for .NET Core/ASP.NET Core
+
+If you're using .NET Core or ASP.NET Core, you will typically register services in `Startup.cs` or `Program.cs`.
+
+#### Using `Startup.cs`
+
+In `Startup.cs`, you can register the services in the `ConfigureServices` method.
+
+```csharp
+using MyLibrary;
+
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        // Register services from the library
+        services.AddMyLibraryServices();
+        
+        // Register other application services
+        services.AddControllers();
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        if (env.IsDevelopment())
+        {
+            app.UseDeveloperExceptionPage();
+        }
+        
+        app.UseRouting();
+        
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapControllers();
+        });
+    }
+}
+```
+
+#### Using `Program.cs` (Minimal API in .NET 6 and later)
+
+In `Program.cs`, you can register the services in the WebApplication builder.
+
+```csharp
+using MyLibrary;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Register services from the library
+builder.Services.AddMyLibraryServices();
+
+// Register other application services
+builder.Services.AddControllers();
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseDeveloperExceptionPage();
+}
+
+app.UseRouting();
+
+app.UseEndpoints(endpoints =>
+{
+    endpoints.MapControllers();
+});
+
+app.Run();
+```
+
+### Explanation:
+
+- **`ServiceCollectionExtensions` class**: This static class in the library project contains a method `AddMyLibraryServices` that registers the library’s services with the DI container.
+- **Extension Method**: The method `AddMyLibraryServices` is an extension method for `IServiceCollection`, which makes it easy to call from the main application.
+- **Service Registration**: Inside the method, services are registered using standard DI methods such as `AddTransient`, `AddScoped`, or `AddSingleton`.
+
+### Including Conditionals Based on Target Framework:
+
+If you need to conditionally register services based on the target framework, you can use compiler directives in the `ServiceCollectionExtensions` class.
+
+```csharp
+using Microsoft.Extensions.DependencyInjection;
+
+namespace MyLibrary
+{
+    public static class ServiceCollectionExtensions
+    {
+        public static void AddMyLibraryServices(this IServiceCollection services)
+        {
+            #if !NETSTANDARD2_0
+            // Register services for frameworks other than .NET Standard 2.0
+            services.AddTransient<IMyService, MyServiceForNetCore>();
+            #else
+            // Register services for .NET Standard 2.0
+            services.AddTransient<IMyService, MyServiceForNetStandard>();
+            #endif
+            
+            // Common service registrations
+            services.AddTransient<ICommonService, CommonService>();
+        }
+    }
+}
+```
+
+By following these steps, you enable service registration for your library project, allowing the main application to easily integrate and use the services provided by the library.
