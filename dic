@@ -1,0 +1,41 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+public class Model
+{
+    public string Value { get; set; }
+}
+
+class Program
+{
+    static void Main()
+    {
+        Dictionary<string, string> dictionary = new Dictionary<string, string>
+        {
+            { "key1", "value1" },
+            { "key2", "value2" },
+            { "key3", "value3" }
+        };
+
+        List<Model> models = new List<Model>
+        {
+            new Model { Value = "value1" },
+            new Model { Value = "value4" },
+            new Model { Value = "value5" }
+        };
+
+        string keyToCompare = "key1";
+
+        bool keyExistsInModels = models.Any(m => m.Value == dictionary[keyToCompare]);
+
+        if (keyExistsInModels)
+        {
+            Console.WriteLine("Key's value found in the list.");
+        }
+        else
+        {
+            Console.WriteLine("Key's value not found in the list.");
+        }
+    }
+}
