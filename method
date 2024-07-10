@@ -1,0 +1,40 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System.Collections.Generic;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Register the DataService with the dependency injection container
+builder.Services.AddSingleton<DataService>();
+
+// Configure services
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseHttpsRedirection();
+
+// Get the DataService instance from the DI container
+var dataService = app.Services.GetRequiredService<DataService>();
+
+// Call the GetData method and assign the data to a variable
+var data = dataService.GetData();
+
+// Map an endpoint to return the data
+app.MapGet("/data", () =>
+{
+    return data;
+})
+.WithName("GetData")
+.WithOpenApi();
+
+app.Run();
