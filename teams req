@@ -1,0 +1,118 @@
+To create a complete request and response model for sending messages to Microsoft Teams using MassTransit, you need to define message contracts for both the request and response, implement a consumer to handle the request and send the message to Teams, and then handle the response. Here’s a detailed example:
+
+1. **Define the Message Contracts:**
+
+   First, define the message contracts for the request and response.
+
+   ```csharp
+   // Request message contract
+   public class TeamsMessageRequest
+   {
+       public string Content { get; set; }
+       public string TeamId { get; set; }
+       public string ChannelId { get; set; }
+   }
+
+   // Response message contract
+   public class TeamsMessageResponse
+   {
+       public bool Success { get; set; }
+       public string ErrorMessage { get; set; }
+   }
+   ```
+
+2. **Implement the Consumer:**
+
+   Create a consumer that handles the request, sends the message to Teams, and publishes a response.
+
+   ```csharp
+   using MassTransit;
+   using Microsoft.Graph;
+   using Microsoft.Identity.Client;
+   using System.Threading.Tasks;
+
+   public class TeamsMessageConsumer : IConsumer<TeamsMessageRequest>
+   {
+       private readonly GraphServiceClient _graphClient;
+
+       public TeamsMessageConsumer()
+       {
+           _graphClient = GetGraphServiceClient().GetAwaiter().GetResult();
+       }
+
+       public async Task Consume(ConsumeContext<TeamsMessageRequest> context)
+       {
+           var response = new TeamsMessageResponse();
+
+           try
+           {
+               var message = new ChatMessage
+               {
+                   Body = new ItemBody
+                   {
+                       Content = context.Message.Content
+                   }
+               };
+
+               await _graphClient.Teams[context.Message.TeamId]
+                   .Channels[context.Message.ChannelId]
+                   .Messages
+                   .Request()
+                   .AddAsync(message);
+
+               response.Success = true;
+               response.ErrorMessage = null;
+           }
+           catch (ServiceException ex)
+           {
+               response.Success = false;
+               response.ErrorMessage = ex.Message;
+           }
+
+           await context.RespondAsync(response);
+       }
+
+       private async Task<GraphServiceClient> GetGraphServiceClient()
+       {
+           var clientId = "YOUR_CLIENT_ID";
+           var tenantId = "YOUR_TENANT_ID";
+           var clientSecret = "YOUR_CLIENT_SECRET";
+           
+           var confidentialClientApplication = ConfidentialClientApplicationBuilder
+               .Create(clientId)
+               .WithTenantId(tenantId)
+               .WithClientSecret(clientSecret)
+               .Build();
+
+           var authProvider = new ClientCredentialProvider(confidentialClientApplication);
+
+           return new GraphServiceClient(authProvider);
+       }
+   }
+   ```
+
+3. **Configure MassTransit and the Consumer:**
+
+   Set up MassTransit and configure the consumer in your `Program` class.
+
+   ```csharp
+   using MassTransit;
+   using Microsoft.Extensions.DependencyInjection;
+   using Microsoft.Extensions.Hosting;
+
+   public class Program
+   {
+       public static async Task Main(string[] args)
+       {
+           var host = Host.CreateDefaultBuilder(args)
+               .ConfigureServices((hostContext, services) =>
+               {
+                   services.AddMassTransit(x =>
+                   {
+                       x.AddConsumer<TeamsMessageConsumer>();
+
+                       x.UsingRabbitMq((context, cfg) =>
+                       {
+                           cfg.Host("localhost", "/", h =>
+                           {
+                              
