@@ -1,0 +1,97 @@
+The error message `CS1660: Cannot convert lambda expression to type 'int' because it is not a delegate type` indicates that there's a type mismatch in your lambda expression. This error typically occurs when the expected type for a lambda expression does not match the actual delegate type being provided.
+
+Based on the code snippet from your screenshot, it looks like you are trying to use a lambda expression in a context where an integer is expected. Specifically, you are likely trying to use a lambda expression to filter `futureContracts`.
+
+Here’s how you can modify your code to use the lambda expression correctly. Ensure that the `futureContracts` variable is a collection of integers, and use the lambda expression appropriately to filter the consumer configurations:
+
+1. **Retrieve the `futureContracts` list correctly:**
+
+   Ensure `futureContracts` is a list of integers, retrieved asynchronously:
+
+   ```csharp
+   var futureContracts = await _futureContractProcessor.GetFutureContracts();
+   ```
+
+2. **Modify the consumer configuration to use the lambda expression correctly:**
+
+   Update the lambda expression to filter the `futureContracts` list properly:
+
+   ```csharp
+   var consumerConfigs = new List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType, Func<ConsumeContext, bool> FilterPredicate)>
+   {
+       ("orders", typeof(RequestResponseConsumer<AmiusOrder, AmiusOrder>), typeof(AmiusOrder), typeof(AmiusOrder),
+           context => futureContracts.Contains(((context.Message as AmiusOrder)?.FuturesContractId ?? -1))),
+       ("orders", typeof(RequestResponseConsumer<string, OrderSummary>), typeof(string), typeof(OrderSummary), context => true),
+       ("orders", typeof(RequestResponseConsumer<string, ADL.Amius.TT.Model.TtAccount>), typeof(string), typeof(ADL.Amius.TT.Model.TtAccount), context => true)
+   };
+   ```
+
+3. **Ensure the correct method signature for `AddMassTransitWithConfig`:**
+
+   Make sure `AddMassTransitWithConfig` method signature matches the updated consumer configuration tuple:
+
+   ```csharp
+   public static IServiceCollection AddMassTransitWithConfig(this IServiceCollection services, object messageConfig, List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType, Func<ConsumeContext, bool> FilterPredicate)> consumerConfigs)
+   {
+       // Add your MassTransit configuration logic here
+       return services;
+   }
+   ```
+
+4. **Complete implementation in your service provider class:**
+
+   ```csharp
+   public class MassTransitConfigurator
+   {
+       private readonly IFutureContractProcessor _futureContractProcessor;
+
+       public MassTransitConfigurator(IFutureContractProcessor futureContractProcessor)
+       {
+           _futureContractProcessor = futureContractProcessor;
+       }
+
+       public async Task ConfigureAsync(IServiceCollection services, object messageConfig)
+       {
+           var futureContracts = await _futureContractProcessor.GetFutureContracts();
+
+           var consumerConfigs = new List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType, Func<ConsumeContext, bool> FilterPredicate)>
+           {
+               ("orders", typeof(RequestResponseConsumer<AmiusOrder, AmiusOrder>), typeof(AmiusOrder), typeof(AmiusOrder),
+                   context => futureContracts.Contains(((context.Message as AmiusOrder)?.FuturesContractId ?? -1))),
+               ("orders", typeof(RequestResponseConsumer<string, OrderSummary>), typeof(string), typeof(OrderSummary), context => true),
+               ("orders", typeof(RequestResponseConsumer<string, ADL.Amius.TT.Model.TtAccount>), typeof(string), typeof(ADL.Amius.TT.Model.TtAccount), context => true)
+           };
+
+           services.AddMassTransitWithConfig(
+               messageConfig,
+               consumerConfigs);
+       }
+   }
+   ```
+
+5. **Modify the `Program.cs` to use the configurator:**
+
+   ```csharp
+   var builder = WebApplication.CreateBuilder(args);
+
+   // Bind configuration to MySettings
+   builder.Services.Configure<MySettings>(builder.Configuration.GetSection("MySettings"));
+
+   // Register the repository and service
+   builder.Services.AddScoped<IFutureContractProcessor, FutureContractProcessor>();
+   builder.Services.AddScoped<MassTransitConfigurator>();
+
+   var app = builder.Build();
+
+   // Access the service provider through the IServiceProvider and initialize
+   using (var scope = app.Services.CreateScope())
+   {
+       var configurator = scope.ServiceProvider.GetRequiredService<MassTransitConfigurator>();
+       var messageConfig = new object(); // Replace with actual messageConfig
+       await configurator.ConfigureAsync(builder.Services, messageConfig);
+   }
+
+   app.Run();
+   ```
+
+This should resolve the `CS1660` error and properly configure your consumer configurations with the lambda expression used for filtering based on `futureContracts`.
