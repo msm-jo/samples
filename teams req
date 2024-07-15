@@ -115,4 +115,97 @@ To create a complete request and response model for sending messages to Microsof
                        {
                            cfg.Host("localhost", "/", h =>
                            {
-                              
+                               h.Username("guest");
+                               h.Password("guest");
+                           });
+
+                           cfg.ReceiveEndpoint("teams_message_queue", e =>
+                           {
+                               e.ConfigureConsumer<TeamsMessageConsumer>(context);
+                           });
+                       });
+                   });
+
+                   services.AddMassTransitHostedService();
+               })
+               .Build();
+
+           await host.RunAsync();
+       }
+   }
+   ```
+
+4. **Publish a Message and Handle the Response:**
+
+   Publish a message and handle the response using a request client.
+
+   ```csharp
+   using MassTransit;
+   using Microsoft.Extensions.DependencyInjection;
+   using Microsoft.Extensions.Hosting;
+   using System;
+   using System.Threading.Tasks;
+
+   public class Program
+   {
+       public static async Task Main(string[] args)
+       {
+           var host = Host.CreateDefaultBuilder(args)
+               .ConfigureServices((hostContext, services) =>
+               {
+                   services.AddMassTransit(x =>
+                   {
+                       x.UsingRabbitMq((context, cfg) =>
+                       {
+                           cfg.Host("localhost", "/", h =>
+                           {
+                               h.Username("guest");
+                               h.Password("guest");
+                           });
+                       });
+
+                       services.AddMassTransitHostedService();
+                   });
+               })
+               .Build();
+
+           var busControl = host.Services.GetRequiredService<IBusControl>();
+
+           await busControl.StartAsync();
+           try
+           {
+               var requestClient = busControl.CreateRequestClient<TeamsMessageRequest>();
+               var message = new TeamsMessageRequest
+               {
+                   Content = "Hello, this is a message from MassTransit!",
+                   TeamId = "YOUR_TEAM_ID",
+                   ChannelId = "YOUR_CHANNEL_ID"
+               };
+
+               var response = await requestClient.GetResponse<TeamsMessageResponse>(message);
+
+               if (response.Message.Success)
+               {
+                   Console.WriteLine("Message sent to Teams channel successfully!");
+               }
+               else
+               {
+                   Console.WriteLine($"Failed to send message: {response.Message.ErrorMessage}");
+               }
+           }
+           finally
+           {
+               await busControl.StopAsync();
+           }
+       }
+   }
+   ```
+
+**Explanation:**
+
+- **Message Contracts:** `TeamsMessageRequest` is the request message contract, and `TeamsMessageResponse` is the response message contract.
+- **Consumer Implementation:** `TeamsMessageConsumer` processes the incoming `TeamsMessageRequest`, sends the message to Microsoft Teams, and responds with a `TeamsMessageResponse`.
+- **MassTransit Configuration:** The `Program` class sets up MassTransit, configures RabbitMQ, and defines a receive endpoint for the `TeamsMessageConsumer`.
+- **Publish and Handle Response:** The second `Program` class demonstrates how to publish a `TeamsMessageRequest` and handle the `TeamsMessageResponse`.
+
+Replace placeholders like `YOUR_CLIENT_ID`, `YOUR_TENANT_ID`, `YOUR_CLIENT_SECRET`, `YOUR_TEAM_ID`, and `YOUR_CHANNEL_ID` with your actual values. This setup allows you to send messages to Microsoft Teams and handle the responses using MassTransit.
