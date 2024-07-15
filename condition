@@ -1,0 +1,35 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System;
+using System.Collections.Generic;
+using YourNamespace; // Replace with your actual namespace
+
+var builder = WebApplication.CreateBuilder(args);
+
+var messagingConfig = builder.Configuration.GetSection("MessagingConfig").Get<MessagingConfig>();
+
+var futureContracts = new List<int> { 2956 }; // Add your future contract IDs here
+
+var consumerConfigs = new List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType, Func<ConsumeContext, bool> FilterPredicate)>
+{
+    ("orders", typeof(RequestResponseHandler<AmiusOrder>), typeof(AmiusOrder), typeof(AmiusOrder), context => futureContracts.Contains(((AmiusOrder)context.Message).FuturesContractId)),
+    ("cancelorders", typeof(RequestResponseHandler<OrderSummary>), typeof(string), typeof(OrderSummary), context => futureContracts.Contains(((OrderSummary)context.Message).FuturesContractId)),
+    ("orders", typeof(RequestResponseHandler<TtAccount>), typeof(string), typeof(TtAccount), context => futureContracts.Contains(((TtAccount)context.Message).FuturesContractId))
+};
+
+// Additional services to be registered
+void AdditionalServices(IServiceCollection services)
+{
+    // Add any additional services here
+    services.AddSingleton<MyAdditionalService>();
+}
+
+builder.Services.AddMassTransitWithConfig(messagingConfig, consumerConfigs, AdditionalServices);
+
+builder.Services.AddMassTransitHostedService();
+
+var app = builder.Build();
+
+app.MapGet("/", () => "Hello World!");
+
+app.Run();
