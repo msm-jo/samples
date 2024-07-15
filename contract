@@ -1,0 +1,76 @@
+From the screenshot, it appears you are trying to call an instance method `GetFutureContracts` from the `IFutureContractProcessor` interface within a static context. This method needs an instance of the `FutureContractProcessor` class to be invoked.
+
+To achieve this within your service configuration, you can follow these steps:
+
+1. Ensure `FutureContractProcessor` is registered as a service.
+2. Retrieve an instance of `IFutureContractProcessor` through dependency injection.
+3. Use this instance to call the `GetFutureContracts` method and process the result.
+
+Here is an example of how to modify your code accordingly:
+
+1. **Register `IFutureContractProcessor` in your service collection:**
+
+```csharp
+builder.Services.AddScoped<IFutureContractProcessor, FutureContractProcessor>();
+```
+
+2. **Modify the method to retrieve the list of integers from the `FutureContractProcessor`:**
+
+```csharp
+public static IServiceCollection AddMassTransitWithConfig(this IServiceCollection services)
+{
+    var serviceProvider = services.BuildServiceProvider();
+    var futureContractProcessor = serviceProvider.GetRequiredService<IFutureContractProcessor>();
+
+    var futureContractsTask = futureContractProcessor.GetFutureContracts();
+    futureContractsTask.Wait(); // Ensure the task completes (consider using async/await in a real-world scenario)
+    int[] futureContracts = futureContractsTask.Result.ToArray();
+
+    var consumerConfigs = new List<(string QueueName, Type ConsumerType)>
+    {
+        ("orders", typeof(RequestResponseConsumer<AmiusOrder, AmiusOrder>)),
+        ("orders", typeof(RequestResponseConsumer<string, OrderSummary>)),
+        ("orders", typeof(RequestResponseConsumer<string, ADL.Amius.TT.Model.TtAccount>))
+    };
+
+    services.AddMassTransitWithConfig(
+        messageConfig,
+        consumerConfigs);
+
+    return services;
+}
+```
+
+Alternatively, you can use an asynchronous method to handle this more gracefully:
+
+```csharp
+public static async Task<IServiceCollection> AddMassTransitWithConfigAsync(this IServiceCollection services)
+{
+    var serviceProvider = services.BuildServiceProvider();
+    var futureContractProcessor = serviceProvider.GetRequiredService<IFutureContractProcessor>();
+
+    var futureContracts = await futureContractProcessor.GetFutureContracts();
+
+    var consumerConfigs = new List<(string QueueName, Type ConsumerType)>
+    {
+        ("orders", typeof(RequestResponseConsumer<AmiusOrder, AmiusOrder>)),
+        ("orders", typeof(RequestResponseConsumer<string, OrderSummary>)),
+        ("orders", typeof(RequestResponseConsumer<string, ADL.Amius.TT.Model.TtAccount>))
+    };
+
+    services.AddMassTransitWithConfig(
+        messageConfig,
+        consumerConfigs);
+
+    return services;
+}
+```
+
+And then call it as follows:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+await builder.Services.AddMassTransitWithConfigAsync();
+```
+
+By following these steps, you ensure that you are correctly using dependency injection to obtain the necessary instance of `IFutureContractProcessor` and call its method within the appropriate context.
