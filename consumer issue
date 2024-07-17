@@ -1,0 +1,226 @@
+The issue appears to be related to the configuration of the MassTransit consumers. Specifically, there might be a mismatch or an issue with the way the consumers are being added or configured in the `AddMassTransitWithConfig` method.
+
+To resolve this, let's ensure that the consumers are correctly registered and configured. We'll review and adjust the `AddMassTransitWithConfig` method and the `ConfigureBus` method to ensure they handle the consumers properly.
+
+Here's the updated code:
+
+### Step 1: Update `AddMassTransitWithConfig` Method
+
+Make sure the `AddMassTransitWithConfig` method correctly registers the consumers and their configurations.
+
+**ServiceCollectionExtensions.cs**:
+```csharp
+using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using System;
+using System.Collections.Generic;
+
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddMassTransitWithConfig(
+        this IServiceCollection services,
+        MessagingConfig config,
+        List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType, Func<ConsumeContext<object>, bool> FilterPredicate)> consumerConfigs,
+        Action<IServiceCollection> additionalServices = null)
+    {
+        services.AddMassTransit(x =>
+        {
+            foreach (var (queueName, consumerType, requestType, responseType, filterPredicate) in consumerConfigs)
+            {
+                x.AddConsumer(consumerType);
+            }
+
+            CommonBusConfigurator.ConfigureBus(x, config, consumerConfigs);
+        });
+
+        services.AddTransient<IMessagePublisher, SimplePublisher>();
+
+        additionalServices?.Invoke(services); // Invoke additional services if provided
+
+        return services;
+    }
+}
+```
+
+### Step 2: Update `ConfigureBus` Method
+
+Ensure that the `ConfigureBus` method correctly sets up the consumers for the RabbitMQ transport.
+
+**CommonBusConfigurator.cs**:
+```csharp
+using MassTransit;
+using MassTransit.AzureServiceBusTransport;
+using MassTransit.RabbitMqTransport;
+using System;
+using System.Collections.Generic;
+using System.Text.Json.Serialization;
+
+public static class CommonBusConfigurator
+{
+    public static void ConfigureJsonSerializerOptions(IRabbitMqBusFactoryConfigurator busConfig)
+    {
+        busConfig.ConfigureJsonSerializerOptions(o =>
+        {
+            o.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals | JsonNumberHandling.AllowReadingFromString;
+            return o;
+        });
+    }
+
+    public static void ConfigureJsonSerializerOptions(IServiceBusBusFactoryConfigurator busConfig)
+    {
+        busConfig.ConfigureJsonSerializerOptions(o =>
+        {
+            o.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals | JsonNumberHandling.AllowReadingFromString;
+            return o;
+        });
+    }
+
+    public static void ConfigureBus(
+        IBusRegistrationConfigurator configurator,
+        MessagingConfig config,
+        List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType, Func<ConsumeContext<object>, bool> FilterPredicate)> consumerConfigs)
+    {
+        switch (config.Transport)
+        {
+            case TransportType.RabbitMQ:
+                configurator.UsingRabbitMq((context, cfg) =>
+                {
+                    ConfigureJsonSerializerOptions(cfg);
+
+                    cfg.Host(config.Host, h =>
+                    {
+                        h.Username(config.UserName);
+                        h.Password(config.Password);
+                    });
+
+                    foreach (var (queueName, consumerType, requestType, responseType, filterPredicate) in consumerConfigs)
+                    {
+                        cfg.ReceiveEndpoint(queueName, e =>
+                        {
+                            e.ConfigureConsumer(context, consumerType);
+
+                            if (filterPredicate != null)
+                            {
+                                e.UseFilter(new PredicateFilter<object>(filterPredicate));
+                            }
+
+                            e.PrefetchCount = 16;
+                            e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval));
+                        });
+
+                        if (config.ExchangeName != null)
+                        {
+                            cfg.Message(requestType, c => c.SetEntityName(config.ExchangeName));
+                            cfg.PublishTopology.GetMessageTopology(responseType).SetEntityName(config.ExchangeName);
+                        }
+                    }
+                });
+                break;
+
+            case TransportType.AzureServiceBus:
+                configurator.UsingAzureServiceBus((context, cfg) =>
+                {
+                    ConfigureJsonSerializerOptions(cfg);
+
+                    cfg.Host(config.ConnectionString);
+
+                    foreach (var (queueName, consumerType, requestType, responseType, filterPredicate) in consumerConfigs)
+                    {
+                        cfg.ReceiveEndpoint(queueName, e =>
+                        {
+                            e.ConfigureConsumer(context, consumerType);
+
+                            if (filterPredicate != null)
+                            {
+                                e.UseFilter(new PredicateFilter<object>(filterPredicate));
+                            }
+
+                            e.PrefetchCount = 16;
+                            e.UseMessageRetry(r => r.Interval(config.RetryCount, config.RetryInterval));
+                        });
+
+                        if (config.ExchangeName != null)
+                        {
+                            cfg.Message(requestType, c => c.SetEntityName(config.ExchangeName));
+                            cfg.PublishTopology.GetMessageTopology(responseType).SetEntityName(config.ExchangeName);
+                        }
+                    }
+                });
+                break;
+
+            default:
+                throw new ArgumentException("Invalid transport type");
+        }
+    }
+}
+```
+
+### Step 3: Ensure Correct Consumer and Context Types
+
+Ensure that the `RequestResponseHandler<T>` and `RequestResponseConsumer<TRequest, TResponse>` types are correctly defined and compatible with MassTransit.
+
+**RequestResponseHandler.cs**:
+```csharp
+using MassTransit;
+using System.Threading.Tasks;
+
+public class RequestResponseHandler<TMessage> : IConsumer<TMessage> where TMessage : class
+{
+    public async Task Consume(ConsumeContext<TMessage> context)
+    {
+        var message = context.Message;
+
+        // Implement your logic to handle the incoming message
+        // For example, you can log it or process it further
+
+        await Task.CompletedTask;
+    }
+}
+```
+
+### Step 4: Update the Configuration and Registration
+
+Ensure the consumers and predicates are correctly set up in your configuration and registration.
+
+**Program.cs**:
+```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System;
+using System.Collections.Generic;
+using YourNamespace; // Replace with your actual namespace
+
+var builder = WebApplication.CreateBuilder(args);
+
+var messagingConfig = builder.Configuration.GetSection("MessagingConfig").Get<MessagingConfig>();
+
+var futureContracts = new List<int>(); // Add your future contract IDs here
+
+builder.Services.AddScoped<IFutureContractProcessor, FutureContractProcessor>();
+
+builder.Services.AddMassTransitWithConfig(messagingConfig, consumerConfigs =>
+{
+    var serviceProvider = builder.Services.BuildServiceProvider();
+    var futureContractProcessor = serviceProvider.GetRequiredService<IFutureContractProcessor>();
+    futureContracts = futureContractProcessor.GetFutureContracts().Result;
+
+    return new List<(string QueueName, Type ConsumerType, Type RequestType, Type ResponseType, Func<ConsumeContext<object>, bool> FilterPredicate)>
+    {
+        (messagingConfig.ReceiverQueue!, typeof(RequestResponseHandler<AmiusOrder>), typeof(AmiusOrder), typeof(AmiusOrder), context => futureContracts.Contains(((AmiusOrder)context.Message).FuturesContractId)),
+        (messagingConfig.ReceiverQueue!, typeof(RequestResponseHandler<OrderSummary>), typeof(string), typeof(OrderSummary), context => true),
+        (messagingConfig.ReceiverQueue!, typeof(RequestResponseHandler<IEnumerable<TtAccount>>), typeof(string), typeof(IEnumerable<TtAccount>), context => true)
+    };
+});
+
+builder.Services.AddMassTransitHostedService();
+
+var app = builder.Build();
+
+app.MapGet("/", () => "Hello World!");
+
+app.Run();
+```
+
+### Summary
+
+By ensuring the correct configuration and registration of the consumers and predicates, you should be able to resolve the issue and properly set up MassTransit with RabbitMQ for handling your messages. The `RequestResponseHandler<T>` and `RequestResponseConsumer<TRequest, TResponse>` types should be correctly defined and used to process the incoming messages.
